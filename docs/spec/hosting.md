@@ -27,7 +27,7 @@ Order matters: steps 1–3 can happen now. Step 4 waits for our push (the additi
 | `HDYAI_ANALYSIS_URL` | analysis project origin | already in `vercel.json`; change only if the analysis URL changes |
 | Clerk keys (`CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`) | from Vercel Marketplace Clerk integration | already provisioned per README |
 | **`ANTHROPIC_API_KEY`** | an Anthropic key with access to `claude-opus-5-5` | **NEW**, used by the analyst chat route `app/api/analyst/route.ts` (server-only, never `NEXT_PUBLIC_`) |
-| `REPORT_TIMEZONE` | `Europe/Berlin` (our `~/.scorer/config.toml` tz) | **NEW**, defaults to America/Los_Angeles otherwise, which shifts day boundaries |
+| `REPORT_TIMEZONE` | `America/Los_Angeles` | optional: our config tz is unset → system tz = America/Los_Angeles, which is already their default. Set it explicitly only if our tz changes |
 
 **analysis project** (`ari-version/services/analysis/`), no new vars:
 
@@ -76,7 +76,7 @@ Analysis first: the web app's new fields are optional, but the analysis service 
 `metrics` record and `moments` before we sync.
 
 ### Checklist to send back to us
-- [ ] `ANTHROPIC_API_KEY` + `REPORT_TIMEZONE` set on web
+- [ ] `ANTHROPIC_API_KEY` set on web
 - [ ] `npm run analysis:migrate` done (after our push)
 - [ ] activation code sent (we redeem within 15 min)
 - [ ] both projects redeployed (analysis first), URLs confirmed
