@@ -65,22 +65,34 @@ We redeem the code with `scorer sync --activate invite_…` (calls `POST /api/ac
 in `~/.scorer/hdyai.json`, mode 0600). We never run `platform:admin` ourselves.
 
 For the browser: the same invite's `setupLink` signs the Clerk user into the same platform account, so the synced report
-shows on the dashboard. If Ari prefers to view under his own account, invite `ari` for the browser and we'll sync to `max`.
+shows on the dashboard. If Ari prefers to view under their own account, invite `ari` for the browser and we'll sync to `max`.
 Reports are per platform user, so the viewer must be linked to the user we sync as.
+
+### 3b. If PR #1 ("Remove invitation onboarding", `ari/automatic-account-onboarding`) is merged first
+That PR replaces step 3 with self-service accounts. What changes for Ari:
+- **New env var on BOTH projects:** `WEB_PROVISIONING_KEY`, the same random server-only secret (32+ chars).
+- **Neon migrate becomes required:** the PR's `schema.sql` adds `device_credentials.kind` + `provision_web_account()`. Run
+  `npm run analysis:migrate`, then deploy analysis, then web (the order from the PR).
+- **No invite for us.** We sign up on the dashboard, follow the 5-step setup, copy the pairing code from the setup message,
+  and redeem it with `scorer sync --activate invite_…` (same `/api/activate` flow; collector credential, ≤3 per account).
+- **Quota drops to 2 analyses/day** for self-service accounts (`platform_users.daily_limit=2`). For demo rehearsals Ari runs
+  `UPDATE platform_users SET daily_limit=6 WHERE id='clerk:user_…';` on our account id (shown after first sign-in).
+- Merge conflict risk with our commit: `app/dashboard.css` (both append) and `lib/hosted.ts` (we don't edit it; PR does).
 
 ### 4. Deploy both projects (after our push)
 ```bash
 cd ari-version && npm ci && npm test && npm run typecheck
 # Vercel: redeploy "analysis" (root services/analysis) FIRST, then "web" (root ari-version)
 ```
-Analysis first: the web app's new fields are optional, but the analysis service must accept evidence kind `metric` and
-the `scorerMetrics` field before we sync. Otherwise `/api/analyze` returns 400 "Invalid evidence payload", and zod strips
-`scorerMetrics` on `/api/sync`.
+`scorer sync` uses the **A-lite** path (merge-design §0–2): it sends only evidence kinds the deployed service already
+accepts, puts our numbers in `metrics` (`scorer_*` keys), and patches TaskSpans onto session summaries. So the hosted demo works
+against the **current** analysis deployment. Redeploying analysis (first) only adds the optional `metric` evidence kind and the
+stored `scorerMetrics` block (Scores tiles on the hosted report). Without it zod just strips `scorerMetrics`.
 
 ### Checklist to send back to us
 - [ ] `ANTHROPIC_API_KEY` + `REPORT_TIMEZONE=Europe/Berlin` set on web
 - [ ] (only for a fresh Neon DB) `npm run analysis:migrate`
-- [ ] activation code sent (we redeem within 15 min)
+- [ ] activation code sent (we redeem within 15 min), **or**, if PR #1 is merged: `WEB_PROVISIONING_KEY` on both projects + `analysis:migrate` + our `daily_limit` raised to 6
 - [ ] both projects redeployed (analysis first), URLs confirmed
 
 ---
