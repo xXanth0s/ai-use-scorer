@@ -21,19 +21,21 @@
 .analyst-input button{border:0;border-radius:8px;background:var(--green);color:#fff;padding:0 12px;cursor:pointer}
 .analyst-input button:disabled{opacity:.5;cursor:default}
 
-/* Report view: two columns, analyst as a sticky right sidebar; drawer below 1280px. */
-.analyst-layout{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:24px;align-items:start}
+/* Report view: analyst fixed flush to the right edge below the 78px top nav; the report reserves 380px. Drawer below 1280px. */
+:root{--analyst-top:78px;--analyst-w:380px}
 .analyst-layout-main{min-width:0}
-.analyst-sidebar{position:sticky;top:78px;height:calc(100vh - 78px);box-sizing:border-box;padding:16px 0}
-.analyst-sidebar .analyst-panel{height:100%;max-height:none;box-sizing:border-box}
+.analyst-sidebar{position:fixed;top:var(--analyst-top);right:0;bottom:0;z-index:40;width:var(--analyst-w);box-sizing:border-box;background:var(--panel);border-left:1px solid var(--line)}
+.analyst-sidebar .analyst-panel{height:100%;max-height:none;box-sizing:border-box;border:0;border-radius:0}
 .analyst-sidebar .analyst-log{flex:1;min-height:0}
+.main:has(.analyst-layout){padding-right:var(--analyst-w)}
 .analyst-toggle,.analyst-close,.analyst-scrim{display:none}
 @media (max-width:1279px){
- .analyst-layout{grid-template-columns:minmax(0,1fr)}
- .analyst-sidebar{position:fixed;top:0;right:0;z-index:60;width:min(380px,92vw);padding:0;background:var(--panel);border-left:1px solid var(--line);box-shadow:-8px 0 24px rgba(0,0,0,.08);transform:translateX(105%);transition:transform .2s ease-out}
+ .analyst-sidebar{z-index:60;width:min(var(--analyst-w),92vw);box-shadow:-8px 0 24px rgba(0,0,0,.08);transform:translateX(105%);transition:transform .2s ease-out}
  .analyst-sidebar.open{transform:none}
- .analyst-sidebar .analyst-panel{border:0;border-radius:0;padding-top:44px}
+ .analyst-sidebar .analyst-panel{padding-top:44px}
  .analyst-close{display:inline-flex;position:absolute;top:10px;right:10px;z-index:1;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:5px;cursor:pointer}
- .analyst-scrim{display:block;position:fixed;inset:0;z-index:55;background:rgba(0,0,0,.18)}
- .analyst-toggle{display:inline-flex;align-items:center;gap:6px;position:fixed;right:20px;bottom:20px;z-index:50;border:0;border-radius:999px;background:var(--green);color:#fff;padding:10px 16px;font:inherit;font-size:13.5px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.15)}
+ .analyst-scrim{display:block;position:fixed;inset:var(--analyst-top) 0 0 0;z-index:55;background:rgba(0,0,0,.18)}
+ /* Slim tab on the right edge, outside the content column: never covers tiles. */
+ .analyst-toggle{display:inline-flex;align-items:center;gap:6px;position:fixed;right:0;top:50%;z-index:50;transform:translateY(-50%);writing-mode:vertical-rl;border:1px solid var(--line);border-right:0;border-radius:8px 0 0 8px;background:var(--panel);color:var(--green);padding:12px 5px;font:inherit;font-size:12px;cursor:pointer;box-shadow:-2px 0 8px rgba(0,0,0,.06)}
+ .main:has(.analyst-layout){padding-right:30px}
 }
