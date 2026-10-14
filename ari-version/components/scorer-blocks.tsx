@@ -20,8 +20,9 @@ function baseline(t: ScorerTile) {
 
 export function ScoresBlock({ report, onEvidence }: { report: ReportView; onEvidence: (id: string) => void }) {
   const s = report.scorerMetrics; if (!s) return null;
+  const zone = report.timezone || s.tz;
   return <section className="scores-panel" data-testid="scorer-kpis">
-    <div className="panel-heading"><div><span className="section-kicker">MEASURED FROM SESSIONS{s.demo ? ' · DEMO DATA' : ''}</span><h2>Scores</h2></div><span className="quiet-pill">{s.day} · {s.tz}</span></div>
+    <div className="panel-heading"><div><span className="section-kicker">MEASURED FROM SESSIONS{s.demo ? ' · DEMO DATA' : ''}</span><h2>Scores</h2></div><span className="quiet-pill">{s.day} · {zone}</span></div>
     {s.verdict ? <p className="scores-verdict">{s.verdict}</p> : null}
     <div className="scores-grid">{sortTiles(s.tiles).map(t => {
       const look = TILE[t.key] ?? { tone: 'slate', icon: Layers }; const Icon = look.icon; const base = baseline(t);
@@ -39,7 +40,8 @@ export function ScoresBlock({ report, onEvidence }: { report: ReportView; onEvid
 export function DayTimeline({ report, onEvidence }: { report: ReportView; onEvidence: (id: string) => void }) {
   const host = useRef<HTMLDivElement>(null); const [width, setWidth] = useState(900);
   useEffect(() => { const el = host.current; if (!el) return; const ro = new ResizeObserver(() => setWidth(el.clientWidth || 900)); ro.observe(el); setWidth(el.clientWidth || 900); return () => ro.disconnect(); }, []);
-  const zone = report.scorerMetrics?.tz || report.timezone || 'America/Los_Angeles';
+  // Server REPORT_TIMEZONE wins over the export's tz so the whole page labels times in one zone.
+  const zone = report.timezone || report.scorerMetrics?.tz || 'America/Los_Angeles';
   const hhmm = (ms: number) => new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: zone }).format(new Date(ms));
   const L = layoutDayTimeline(report.activity ?? [], report.scorerMetrics?.lanes, report.scorerMetrics?.interrupts, width);
   const trunc = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);

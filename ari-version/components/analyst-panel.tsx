@@ -1,6 +1,6 @@
 'use client';
-import { useRef, useState, type ReactNode } from 'react';
-import { MessageSquare, Send, Wrench } from 'lucide-react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { MessageSquare, Send, Wrench, X } from 'lucide-react';
 import './analyst-panel.css';
 
 type Step = { id: string; tool: string; input: string; done: boolean; error?: boolean };
@@ -10,11 +10,25 @@ const QUICK = ['Where did I skip verification today?', 'What did I do well?', 'W
 const CITE = /\[([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)+(?:, *[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)+)*)\]/g;
 const brief = (v: unknown) => { const s = v && typeof v === 'object' && Object.keys(v).length ? JSON.stringify(v) : ''; return s.length > 60 ? `${s.slice(0, 60)}…` : s; };
 
+// **bold** spans, then citations inside each span.
+export function renderAnswer(text: string, onEvidence: (id: string) => void): ReactNode[] {
+  return text.split(/(\*\*[^*\n]+\*\*)/).map((part, i) => part.startsWith('**') && part.endsWith('**') && part.length > 4
+    ? <strong key={i}>{renderCitations(part.slice(2, -2), onEvidence)}</strong>
+    : <span key={i}>{renderCitations(part, onEvidence)}</span>);
+}
+
+// Evidence line = turn idx * 1000 (+ tool offset), see docs/spec/bridge-contract.md.
+function citeLabel(id: string) {
+  if (id.startsWith('metric:')) return `metric ${id.split(':').pop()}`;
+  const line = Number(id.split(':').pop());
+  return Number.isFinite(line) ? `turn ${Math.floor(line / 1000)}${line % 1000 ? `.${line % 1000}` : ''}` : 'source';
+}
+
 export function renderCitations(text: string, onEvidence: (id: string) => void): ReactNode[] {
   const out: ReactNode[] = []; let last = 0;
   for (const m of text.matchAll(CITE)) {
     out.push(text.slice(last, m.index));
-    m[1].split(/, */).forEach(id => out.push(<button key={`${m.index}-${id}`} type="button" className="analyst-cite" onClick={() => onEvidence(id)} title={id}>{id.startsWith('metric:') ? 'metric' : 'source'} {id.split(':').pop()}</button>));
+    m[1].split(/, */).forEach(id => out.push(<button key={`${m.index}-${id}`} type="button" className="analyst-cite" onClick={() => onEvidence(id)} title={id}>{citeLabel(id)}</button>));
     last = (m.index ?? 0) + m[0].length;
   }
   out.push(text.slice(last));
@@ -23,7 +37,11 @@ export function renderCitations(text: string, onEvidence: (id: string) => void):
 
 export function AnalystPanel({ reportId, onEvidence }: { reportId: string; onEvidence: (id: string) => void }) {
   const [turns, setTurns] = useState<Turn[]>([]), [input, setInput] = useState(''), [busy, setBusy] = useState(false);
-  const abort = useRef<AbortController | null>(null);
+  const abort = useRef<AbortController | null>(null), log = useRef<HTMLDivElement | null>(null);
+  // Before hydration a submit would be a native form GET (page reload, question lost): keep the input disabled until mounted.
+  const [ready, setReady] = useState(false);
+  useEffect(() => setReady(true), []);
+  useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight }); }, [turns]);
   const patch = (id: string, f: (t: Turn) => Turn) => setTurns(ts => ts.map(t => (t.id === id ? f(t) : t)));
 
   async function ask(question: string) {
@@ -55,19 +73,33 @@ export function AnalystPanel({ reportId, onEvidence }: { reportId: string; onEvi
 
   return <section className="analyst-panel" data-testid="analyst-panel-root" aria-label="Ask the analyst">
     <header className="analyst-head"><MessageSquare size={15} /><strong>Ask the analyst</strong><small>answers cite your sessions</small></header>
-    <div className="analyst-log">
-      {!turns.length && <div className="analyst-quick">{QUICK.map(q => <button key={q} type="button" onClick={() => ask(q)} disabled={busy}>{q}</button>)}</div>}
+    <div className="analyst-log" ref={log}>
+      {!turns.length && <div className="analyst-quick">{QUICK.map(q => <button key={q} type="button" onClick={() => ask(q)} disabled={busy || !ready}>{q}</button>)}</div>}
       {turns.map(t => t.role === 'user'
         ? <p key={t.id} className="analyst-q">{t.text}</p>
         : <div key={t.id} className="analyst-a" data-testid="analyst-answer">
             {t.steps.map(s => <div key={s.id} className={`analyst-step${s.done ? ' done' : ''}${s.error ? ' failed' : ''}`}><Wrench size={11} />{s.tool} <span>{s.input}</span></div>)}
-            {t.text ? <p>{renderCitations(t.text, onEvidence)}</p> : !t.error && <p className="analyst-wait">Thinking…</p>}
+            {t.text ? <p>{renderAnswer(t.text, onEvidence)}</p> : !t.error && <p className="analyst-wait">Thinking…</p>}
             {t.error && <p className="analyst-error">{t.error}</p>}
           </div>)}
     </div>
     <form className="analyst-input" onSubmit={e => { e.preventDefault(); ask(input); }}>
-      <input data-testid="analyst-input" value={input} onChange={e => setInput(e.target.value)} placeholder="Ask about this report…" maxLength={2000} disabled={busy} />
-      <button type="submit" disabled={busy || !input.trim()} aria-label="Send"><Send size={14} /></button>
+      <input data-testid="analyst-input" value={input} onChange={e => setInput(e.target.value)} placeholder={ready ? 'Ask about this report…' : 'Loading…'} maxLength={2000} disabled={busy || !ready} />
+      <button type="submit" disabled={busy || !ready || !input.trim()} aria-label="Send"><Send size={14} /></button>
     </form>
   </section>;
+}
+
+// Right-hand sidebar on the report view; below 1280px it becomes a slide-in drawer opened by a floating button.
+export function AnalystSidebar({ reportId, onEvidence, children }: { reportId: string; onEvidence: (id: string) => void; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return <div className="analyst-layout">
+    <div className="analyst-layout-main">{children}</div>
+    <aside className={`analyst-sidebar${open ? ' open' : ''}`} data-testid="analyst-panel">
+      <button type="button" className="analyst-close" onClick={() => setOpen(false)} aria-label="Close analyst"><X size={16} /></button>
+      <AnalystPanel reportId={reportId} onEvidence={id => { setOpen(false); onEvidence(id); }} />
+    </aside>
+    {open && <div className="analyst-scrim" onClick={() => setOpen(false)} />}
+    <button type="button" className="analyst-toggle" data-testid="analyst-toggle" onClick={() => setOpen(true)} aria-label="Ask the analyst"><MessageSquare size={16} />Ask the analyst</button>
+  </div>;
 }
