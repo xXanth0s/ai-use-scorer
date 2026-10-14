@@ -1,0 +1,16 @@
+{
+  "name": "scorer-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Scripted, recordable click-through of the scorer dashboard for a demo video.",
+  "scripts": {
+    "record": "node record.mjs",
+    "titles": "node render_titles.mjs",
+    "assemble": "bash assemble.sh",
+    "all": "node record.mjs && node render_titles.mjs && bash assemble.sh"
+  },
+  "dependencies": {
+    "playwright": "1.56.1"
+  }
+}

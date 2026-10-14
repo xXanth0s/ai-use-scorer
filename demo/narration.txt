@@ -1,0 +1,20 @@
+# id|caption text|spoken text (optional; defaults to caption). One line = one VO clip = one on-screen action.
+# Source: docs/spec/video-storyboard.md §3 (verbatim). p6 [N] values come from `scorer report`, see PROGRESS.md.
+p1a|You use coding agents every day.
+p1b|Your agent measures everything: tokens, cost, tool calls.
+p1c|Nobody measures you. How you prompt, when you verify, where you lose time, whether you are getting better week over week.
+p1d|Scorer does.
+p2|It installs hooks into Claude Code and Codex, reads the local transcripts, and takes a git snapshot at every stop. It scores your choices, not the model's: did you verify after changes, when did you correct the agent and why, what did you hand-edit, how long were you blocked.
+p3a|This is today. Each row is a worktree, each block a turn.
+p3b|Hover and the analyst summarizes what happened.
+p3c|The verdict is one line: the thing that cost most, with its number.
+p3d|Verification: how many edit batches got a relevant test before the next edit.
+p3e|Corrections: an LLM judge labels each one with the cause and quotes the evidence; where it is unsure it abstains, and every label carries an uncalibrated chip until the kappa check is done.
+p3f|Click a card and you land on the turn.
+p3g|Leverage shows what you reached for versus what the agent reached for: skills, subagents, models, cost per model.
+p4a|Ask AI answers from the database. I ask where I lost the most time today.
+p4b|It plans, runs SQL, and comes back with minutes, the sessions involved, and citations that open the exact turn.
+p4c|Peek shows what it looked at.
+p5|Coming next: measuring candidates in coding challenges. A candidate will get a challenge with three planted traps: a README hint that lies, a flaky test, a requirement that quietly conflicts with itself. The profile will show whether they verified, whether they asked, how they responded to evidence. The candidate will see the same profile as the panel, and a human will read the transcript first.
+p6|One more thing. Scorer was built today, in about four hours: one person orchestrating Opus with subagents, Fable advising, Codex reviewing. The hooks were on the whole time. The dashboard you have been watching is the build day. [N] turns, [N] corrections, verification at [N] percent, [$N] spent. It scored its own construction.
+p7|Everything stays on your machine. Install is one command. If you use coding agents, you should know what you do with them. Scorer.
