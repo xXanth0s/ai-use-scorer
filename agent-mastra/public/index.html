@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scorer chat harness</title>
+<style>
+  :root {
+    --pine: #1c2d22; --clay: #b36813; --line: #ddd9d3; --bg: #fff; --muted: #6b7570;
+    --soft: #f6f4f1; --ok: #2f6b45; --err: #a3321f; --r: 8px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--pine); background: var(--bg);
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); }
+  .app { max-width: 820px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; padding: 0 16px; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  header label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  input[type=date], button, textarea { font: inherit; color: inherit; }
+  input[type=date] { border: 1px solid var(--line); border-radius: var(--r); padding: 3px 6px; font-size: 12px; }
+  .health { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .health.up { color: var(--ok); border-color: var(--ok); }
+  .health.down { color: var(--err); border-color: var(--err); }
+  button.link { background: none; border: 0; color: var(--clay); cursor: pointer; font-size: 12px; padding: 0; }
+
+  #log { flex: 1; padding: 16px 0; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 100%; }
+  .msg.user { align-self: flex-end; background: var(--soft); border: 1px solid var(--line); border-radius: var(--r); padding: 8px 12px; white-space: pre-wrap; max-width: 85%; }
+  .msg.assistant { border-left: 3px solid var(--clay); padding: 2px 0 2px 12px; }
+  .body p { margin: 0 0 8px; line-height: 1.5; }
+  .body ul, .body ol { margin: 0 0 8px; padding-left: 22px; line-height: 1.5; }
+  .body code { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 0.9em; font-family: ui-monospace, Menlo, monospace; }
+  .body pre { background: var(--soft); border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; overflow-x: auto; font-size: 12px; }
+  .body pre code { border: 0; padding: 0; background: none; }
+  .cite { display: inline-block; min-width: 20px; padding: 0 5px; margin: 0 1px; border-radius: 999px; border: 1px solid var(--clay); color: var(--clay); background: #fff; font-size: 11px; line-height: 16px; cursor: pointer; vertical-align: 1px; }
+  .cite.bad { border-color: var(--err); color: var(--err); border-style: dashed; }
+  .cite.open { background: var(--clay); color: #fff; }
+  .cite-label { display: block; margin: 4px 0 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--soft); font-size: 12px; }
+
+  details.steps { margin: 4px 0 8px; font-size: 12px; }
+  details.steps > summary { cursor: pointer; color: var(--muted); user-select: none; }
+  .step { border: 1px solid var(--line); border-radius: var(--r); padding: 6px 8px; margin-top: 6px; }
+  .step .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .step .name { font-weight: 600; font-family: ui-monospace, Menlo, monospace; }
+  .step .st { font-size: 11px; }
+  .st.run { color: var(--muted); } .st.ok { color: var(--ok); } .st.err { color: var(--err); }
+  .step .sum { color: var(--muted); }
+  .step pre { margin: 4px 0 0; font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--soft); padding: 4px 6px; border-radius: 4px; }
+  .step.sub { border-color: var(--clay); }
+  .step .kids { margin-left: 12px; }
+  .err-line { color: var(--err); font-size: 13px; margin: 4px 0; }
+  .foot { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .cursor::after { content: "▍"; color: var(--clay); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .suggest { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+  .suggest button { border: 1px solid var(--line); background: #fff; border-radius: var(--r); padding: 6px 10px; font-size: 13px; cursor: pointer; text-align: left; }
+  .suggest button:hover { border-color: var(--clay); }
+  form { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; min-height: 42px; max-height: 180px; border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; font-size: 14px; outline: none; }
+  textarea:focus { border-color: var(--clay); }
+  .primary { background: var(--pine); color: #fff; border: 0; border-radius: var(--r); padding: 10px 16px; cursor: pointer; font-size: 14px; }
+  .primary.stop { background: var(--clay); }
+  .primary:disabled { opacity: .5; cursor: default; }
+  .hint { font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div><h1>scorer chat harness</h1><div class="sub">test page for the Mastra sidecar · POST <span id="api"></span></div></div>
+    <span class="spacer"></span>
+    <label>day on screen <input type="date" id="day"></label>
+    <span class="health" id="health">checking…</span>
+    <button class="link" id="reset" type="button">new chat</button>
+  </header>
+  <div id="log" aria-live="polite"></div>
+  <div class="suggest" id="suggest"></div>
+  <form id="f">
+    <textarea id="q" rows="1" placeholder="Ask about your coding-agent usage…  (Enter sends, Shift+Enter newline)"></textarea>
+    <button class="primary" id="go" type="submit">Send</button>
+  </form>
+</div>
+<script>
+(() => {
+  'use strict';
+  // Endpoint: same-origin /chat by default; ?api=http://127.0.0.1:4111 points elsewhere (needs CORS).
+  const qs = new URLSearchParams(location.search);
+  const API = (qs.get('api') || '').replace(/\/+$/, '');
+  const CHAT_URL = API + '/chat';
+  const SUGGESTIONS = [
+    'What did I do today?',
+    'Which sessions today ended unverified, and what should I run?',
+    'Why was verification low this week? Investigate the worst turns.',
+    'What share of my turns used Opus vs Sonnet in the last 7 days, and what did each cost?',
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const log = $('log'), q = $('q'), go = $('go'), dayIn = $('day'), suggest = $('suggest');
+  $('api').textContent = CHAT_URL;
+  const pad = (n) => String(n).padStart(2, '0');
+  const d = new Date();
+  dayIn.value = qs.get('day') || `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  /** Client-side conversation: only user text and final assistant text are sent back. */
+  let history = [];
+  let ctrl = null;
+
+  // ---------- health ----------
+  fetch(API + '/health').then((r) => r.json()).then((h) => {
+    $('health').textContent = `${h.backend || 'up'} · ${h.model || ''}`;
+    $('health').className = 'health up';
+  }).catch(() => { $('health').textContent = 'sidecar down'; $('health').className = 'health down'; });
+
+  // ---------- safe minimal markdown ----------
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  function inline(s, cites) {
+    // s is already escaped. Code spans first so their content is left alone.
+    const parts = s.split(/(`[^`\n]+`)/g);
+    return parts.map((p) => {
+      if (/^`[^`\n]+`$/.test(p)) return `<code>${p.slice(1, -1)}</code>`;
+      return p
+        .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\[(\d{1,4})\]/g, (_, n) => {
+          const ok = cites.has(Number(n));
+          return `<button type="button" class="cite${ok ? '' : ' bad'}" data-n="${n}" title="${ok ? 'citation' : 'no tool result gave this number'}">${n}</button>`;
+        });
+    }).join('');
+  }
+  function markdown(src, cites) {
+    const lines = esc(src).split('\n');
+    const out = [];
+    let para = [], list = null, code = null;
+    const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(' '), cites)}</p>`); para = []; } };
+    const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i, cites)}</li>`).join('')}</${list.tag}>`); list = null; } };
+    for (const line of lines) {
+      if (code) {
+        if (/^\s*```/.test(line)) { out.push(`<pre><code>${code.join('\n')}</code></pre>`); code = null; } else code.push(line);
+        continue;
+      }
+      if (/^\s*```/.test(line)) { flushPara(); flushList(); code = []; continue; }
+      const ul = /^\s*[-*•]\s+(.*)$/.exec(line), ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (ul || ol) {
+        flushPara();
+        const tag = ul ? 'ul' : 'ol';
+        if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+        list.items.push((ul || ol)[1]);
+        continue;
+      }
+      if (!line.trim()) { flushPara(); flushList(); continue; }
+      const h = /^#{1,6}\s+(.*)$/.exec(line);
+      if (h) { flushPara(); flushList(); out.push(`<p><strong>${inline(h[1], cites)}</strong></p>`); continue; }
+      if (list && /^\s{2,}\S/.test(line)) { list.items[list.items.length - 1] += ' ' + line.trim(); continue; }
+      flushList();
+      para.push(line.trim());
+    }
+    if (code) out.push(`<pre><code>${code.join('\n')}</code></pre>`);
+    flushPara(); flushList();
+    return out.join('');
+  }
+
+  // ---------- rendering ----------
+  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function scroll() { window.scrollTo(0, document.body.scrollHeight); }
+
+  function addUser(text) { log.appendChild(el('div', 'msg user', text)); scroll(); }
+
+  function newAssistant() {
+    const root = el('div', 'msg assistant');
+    const steps = el('details', 'steps'); steps.hidden = true;
+    const sum = el('summary'); steps.appendChild(sum);
+    const body = el('div', 'body cursor');
+    const errs = el('div');
+    const foot = el('div', 'foot');
+    root.append(steps, body, errs, foot);
+    log.appendChild(root);
+    const m = { root, steps, sum, body, errs, foot, text: '', cites: new Map(), byId: new Map(), open: [], count: 0, pending: false };
+    body.addEventListener('click', (e) => {
+      const b = e.target.closest('.cite'); if (!b) return;
+      const n = Number(b.dataset.n);
+      const next = b.nextElementSibling;
+      if (next && next.classList.contains('cite-label')) { next.remove(); b.classList.remove('open'); return; }
+      const c = m.cites.get(n);
+      const lab = el('span', 'cite-label', c ? `[${n}] ${c.label}${c.turn_id != null ? ` (turn_id ${c.turn_id})` : ''}` : `[${n}] not found in any tool result`);
+      b.classList.add('open'); b.after(lab);
+    });
+    return m;
+  }
+  function renderText(m) {
+    if (m.pending) return; m.pending = true;
+    requestAnimationFrame(() => { m.pending = false; m.body.innerHTML = markdown(m.text, m.cites); scroll(); });
+  }
+  function stepCount(m) { m.sum.textContent = `${m.count} step${m.count === 1 ? '' : 's'}`; m.steps.hidden = m.count === 0; }
+  function parentFor(m) { return m.open.length ? m.byId.get(m.open[m.open.length - 1]).kids : m.steps; }
+
+  function onEvent(m, ev) {
+    switch (ev.type) {
+      case 'text-delta': m.text += ev.delta || ''; renderText(m); break;
+      case 'tool-start': {
+        const s = el('div', 'step');
+        const head = el('div', 'head');
+        const st = el('span', 'st run', 'running…');
+        head.append(el('span', 'name', ev.name), st);
+        const sum = el('div', 'sum');
+        s.append(head, el('pre', null, JSON.stringify(ev.input ?? {}, null, 2)), sum);
+        parentFor(m).appendChild(s);
+        m.byId.set(ev.id, { s, st, sum });
+        m.count++; stepCount(m); break;
+      }
+      case 'tool-result': {
+        for (const c of ev.citations || []) m.cites.set(c.n, c);
+        let x = m.byId.get(ev.id);
+        if (!x) { onEvent(m, { type: 'tool-start', id: ev.id, name: ev.name, input: {} }); x = m.byId.get(ev.id); }
+        x.st.textContent = ev.ok ? 'ok' : 'error'; x.st.className = `st ${ev.ok ? 'ok' : 'err'}`;
+        x.sum.textContent = (ev.summary || '') + ((ev.citations || []).length ? ` · cites ${ev.citations.map((c) => c.n).join(', ')}` : '');
+        renderText(m); break;
+      }
+      case 'subagent-start': {
+        const s = el('div', 'step sub');
+        const head = el('div', 'head');
+        const st = el('span', 'st run', 'working…');
+        head.append(el('span', 'name', `↳ ${ev.name}`), st);
+        const sum = el('div', 'sum');
+        const kids = el('div', 'kids');
+        s.append(head, el('div', 'sum', `task: ${ev.task || ''}`), kids, sum);
+        parentFor(m).appendChild(s);
+        m.byId.set(ev.id, { s, st, sum, kids });
+        m.open.push(ev.id);
+        m.count++; stepCount(m); break;
+      }
+      case 'subagent-result': {
+        const x = m.byId.get(ev.id);
+        m.open = m.open.filter((i) => i !== ev.id);
+        if (!x) break;
+        const failed = /^failed:/.test(ev.summary || '');
+        x.st.textContent = failed ? 'failed' : 'done'; x.st.className = `st ${failed ? 'err' : 'ok'}`;
+        x.sum.textContent = `brief: ${ev.summary || ''}`; break;
+      }
+      case 'error': m.errs.appendChild(el('div', 'err-line', `⚠ ${ev.message || 'error'}`)); break;
+      case 'done': m.done = ev; break;
+    }
+  }
+
+  // ---------- SSE over fetch ----------
+  async function send(text) {
+    text = text.trim(); if (!text || ctrl) return;
+    suggest.hidden = true;
+    addUser(text);
+    history.push({ role: 'user', content: text });
+    const m = newAssistant();
+    ctrl = new AbortController();
+    setBusy(true);
+    const t0 = performance.now();
+    try {
+      const res = await fetch(CHAT_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
+        body: JSON.stringify({ messages: history, day: dayIn.value || null }),
+      });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+          const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n');
+          if (!data) continue;
+          try { onEvent(m, JSON.parse(data)); } catch { /* ignore a malformed frame */ }
+        }
+      }
+    } catch (e) {
+      onEvent(m, { type: 'error', message: e.name === 'AbortError' ? 'stopped' : String(e.message || e) });
+    } finally {
+      const ms = Math.round(performance.now() - t0);
+      m.body.classList.remove('cursor');
+      m.body.innerHTML = markdown(m.text, m.cites);
+      const dn = m.done;
+      m.foot.textContent = [dn ? `${dn.backend || '?'} · ${dn.model || 'no model'}` : 'no done event',
+        `${(ms / 1000).toFixed(1)} s`, `${m.cites.size} citation${m.cites.size === 1 ? '' : 's'}`].join(' · ');
+      if (m.text.trim()) history.push({ role: 'assistant', content: m.text });
+      ctrl = null; setBusy(false); q.focus(); scroll();
+    }
+  }
+  function setBusy(b) {
+    go.textContent = b ? 'Stop' : 'Send';
+    go.classList.toggle('stop', b);
+    go.type = b ? 'button' : 'submit';
+  }
+
+  // ---------- wiring ----------
+  for (const s of SUGGESTIONS) {
+    const b = el('button', null, s); b.type = 'button';
+    b.addEventListener('click', () => send(s));
+    suggest.appendChild(b);
+  }
+  $('f').addEventListener('submit', (e) => { e.preventDefault(); const t = q.value; q.value = ''; autosize(); send(t); });
+  go.addEventListener('click', () => { if (ctrl) ctrl.abort(); });
+  q.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('f').requestSubmit(); }
+  });
+  function autosize() { q.style.height = 'auto'; q.style.height = Math.min(q.scrollHeight, 180) + 'px'; }
+  q.addEventListener('input', autosize);
+  $('reset').addEventListener('click', () => { if (ctrl) ctrl.abort(); history = []; log.innerHTML = ''; suggest.hidden = false; q.focus(); });
+  q.focus();
+})();
+</script>
+</body>
+</html>
