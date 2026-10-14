@@ -4,6 +4,7 @@ import { sessions } from 'eve/server';
 import { analysisRequest, buildPrompt, MODEL, reportSchema, validateContent } from '../lib/contract';
 import { admin, body, device, failJob, failure, hash, HttpError, job, response, secret, sql, type Job } from '../lib/store';
 import { evidenceDigest, createPairing, readLibrary, readPublished, syncLibrary } from '../lib/library';
+import { provisionWebAccount } from '../lib/provision';
 
 type State={jobId:string;evidenceIds:string[];text:string;started:number;usage:{inputTokens?:number;outputTokens?:number;costUsd?:number}};
 export default defineChannel<State,{state:State}>({
@@ -16,6 +17,7 @@ export default defineChannel<State,{state:State}>({
   GET('/api/published/:id',(request,{params})=>readPublished(request,params.id)),
   POST('/api/sync',syncLibrary),
   POST('/api/pairings',createPairing),
+  POST('/api/web/provision',provisionWebAccount),
   POST('/api/admin/invites',async request=>{try{
    admin(request);const b=z.object({userId:z.string().min(1).max(100),dailyLimit:z.number().int().min(1).max(20).default(6)}).strict().parse(await body(request,2000));
    const invite=`invite_${secret()}`;const db=sql();
@@ -28,7 +30,7 @@ export default defineChannel<State,{state:State}>({
    const token=`hdyai_${secret()}`;const [row]=await sql()`SELECT activate_device(${hash(b.activationCode)},${hash(token)}) AS user_id`;
    return response({deviceToken:token,userId:row.user_id,expiresAt:new Date(Date.now()+30*86400000).toISOString()});
   }catch(e){return failure(e);}}),
-  GET('/api/device',async request=>{try{const d=await device(request);return response({userId:d.userId,dailyLimit:d.dailyLimit,model:MODEL,reasoning:'low'});}catch(e){return failure(e);}}),
+  GET('/api/device',async request=>{try{const d=await device(request);const [usage]=await sql()`SELECT count(*)::integer AS used_today FROM analysis_jobs WHERE user_id=${d.userId} AND created_at>=(now() AT TIME ZONE 'UTC')::date`;return response({userId:d.userId,dailyLimit:d.dailyLimit,usedToday:Number(usage?.used_today||0),collectorLimit:3,model:MODEL,reasoning:'low'});}catch(e){return failure(e);}}),
   DELETE('/api/device',async request=>{try{const d=await device(request);await sql()`UPDATE device_credentials SET revoked=true WHERE hash=${d.hash}`;return response({revoked:true});}catch(e){return failure(e);}}),
   POST<State>('/api/analyze',async(request,{from})=>{try{
    const d=await device(request);
@@ -67,7 +69,7 @@ export default defineChannel<State,{state:State}>({
   }catch{await failJob(state.jobId,'The assessment did not pass output and evidence validation. Retry with a new report.');}},
   async 'turn.failed'(event,channel){
    const code=event.code.replace(/[^A-Z0-9_:-]/gi,'').slice(0,100);
-   let detail=event.message;for(const value of [process.env.AI_GATEWAY_API_KEY,process.env.PLATFORM_ADMIN_KEY,process.env.DATABASE_URL])if(value)detail=detail.replaceAll(value,'[redacted]');
+   let detail=event.message;for(const value of [process.env.AI_GATEWAY_API_KEY,process.env.PLATFORM_ADMIN_KEY,process.env.WEB_PROVISIONING_KEY,process.env.DATABASE_URL])if(value)detail=detail.replaceAll(value,'[redacted]');
    await sql()`UPDATE analysis_jobs SET telemetry=${JSON.stringify({failureCode:code,failureDetail:detail.slice(0,500)})}::jsonb WHERE id=${channel.state.jobId}`;
    await failJob(channel.state.jobId,`The model assessment failed (${code}). Check platform availability and retry.`);
   },

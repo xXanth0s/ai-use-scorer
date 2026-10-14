@@ -10,12 +10,12 @@ export function privateWebPath(path: string): boolean {
   return /^\/(daily|reports|sessions|settings)(\/|$)/.test(path) || path.startsWith('/api/');
 }
 
-export async function webIdentity(): Promise<{ userId: string } | null> {
+export async function webIdentity(): Promise<{ userId: string; sessionId?: string } | null> {
   if (process.env.HDYAI_HOSTED !== '1') return null;
   if (!webAuthEnabled()) throw new Error('Sign-in is temporarily unavailable.');
   const { auth } = await import('@clerk/nextjs/server');
   const session = await auth();
-  return session.userId ? { userId: session.userId } : null;
+  return session.userId ? { userId: session.userId, sessionId: session.sessionId || undefined } : null;
 }
 
 export async function requireWebIdentity(): Promise<{ userId: string }> {
