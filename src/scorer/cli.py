@@ -29,11 +29,13 @@ def cli() -> None:
 @click.option("--codex-home", default=lambda: os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"))
 @click.option("--yes", is_flag=True, help="Apply without asking.")
 @click.option("--dry-run", is_flag=True, help="Print the diff only.")
-def install(agents, claude_settings, codex_home, yes, dry_run):
+@click.option("--no-schedule", is_flag=True, help="Skip the daily ingest+report job.")
+def install(agents, claude_settings, codex_home, yes, dry_run, no_schedule):
     """Merge scorer hooks into Claude/Codex hook configs (shows diff first)."""
     from .install import run_install
     sys.exit(run_install(agents=agents, claude_settings=claude_settings, codex_home=codex_home,
-                         yes=yes, dry_run=dry_run, uninstall=False))
+                         yes=yes, dry_run=dry_run, uninstall=False,
+                         schedule=False if no_schedule else None))
 
 
 @cli.command()
@@ -42,11 +44,13 @@ def install(agents, claude_settings, codex_home, yes, dry_run):
 @click.option("--codex-home", default=lambda: os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"))
 @click.option("--yes", is_flag=True)
 @click.option("--dry-run", is_flag=True)
-def uninstall(agents, claude_settings, codex_home, yes, dry_run):
+@click.option("--no-schedule", is_flag=True, help="Skip the daily ingest+report job.")
+def uninstall(agents, claude_settings, codex_home, yes, dry_run, no_schedule):
     """Remove scorer hooks, leaving all other hooks untouched."""
     from .install import run_install
     sys.exit(run_install(agents=agents, claude_settings=claude_settings, codex_home=codex_home,
-                         yes=yes, dry_run=dry_run, uninstall=True))
+                         yes=yes, dry_run=dry_run, uninstall=True,
+                         schedule=False if no_schedule else None))
 
 
 def _days(s: str) -> int:

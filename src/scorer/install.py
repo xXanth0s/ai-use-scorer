@@ -180,8 +180,183 @@ def _one(label: str, path: Path, agent: str | None, *, yes: bool, dry_run: bool,
     return 0
 
 
-def run_install(*, agents, claude_settings, codex_home, yes, dry_run, uninstall) -> int:
+# --- daily ingest + report job ---------------------------------------------
+LABEL = "com.scorer.daily"
+CRON_TAG = "# scorer-daily"
+
+DEFAULT_CONFIG = """\
+# scorer config (all keys optional; uncomment to override the default)
+# timezone = "Europe/Berlin"      # default: system tz
+# day_cutoff = "04:00"            # turns before it belong to the previous day
+# report_time = "18:00"           # daily launchd/cron ingest + report
+# judge_model = "claude-haiku-5-5"
+# analyst_model = "claude-opus-5-5"
+# [prices."claude-opus-5-5"]      # USD per 1M tokens; overrides prices.py
+# input = 5.0
+# cached = 0.5
+# cache_write = 6.25
+# output = 25.0
+"""
+
+
+def _scheduler() -> str:
+    """launchd on macOS, cron elsewhere. SCORER_SCHEDULER=launchd|cron overrides (tests)."""
+    s = os.environ.get("SCORER_SCHEDULER")
+    if s in ("launchd", "cron"):
+        return s
+    return "launchd" if sys.platform == "darwin" else "cron"
+
+
+def _launchagents_dir() -> Path:
+    return Path(os.environ.get("SCORER_LAUNCHAGENTS_DIR") or os.path.expanduser("~/Library/LaunchAgents"))
+
+
+def _job_shell(home: Path) -> str:
+    """Shell command for the daily job; expects $SCORER_HOME in its environment."""
+    py = f'"{os.path.abspath(sys.executable)}"'
+    return (f'mkdir -p "$SCORER_HOME/reports" && {py} -m scorer ingest --since 2d && '
+            f'{py} -m scorer report --day today > "$SCORER_HOME/reports/$(date +%F).md"')
+
+
+def _job_path_env() -> str:
+    dirs = [os.path.dirname(os.path.abspath(sys.executable)),
+            "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    return ":".join(dict.fromkeys(dirs))
+
+
+def _report_time():
+    from . import config
+    config.load.cache_clear()
+    return config.load().report_time
+
+
+def plist_text(home: Path, hour: int, minute: int) -> str:
+    import plistlib
+    d = {
+        "Label": LABEL,
+        "ProgramArguments": ["/bin/sh", "-c", _job_shell(home)],
+        "StartCalendarInterval": {"Hour": hour, "Minute": minute},
+        "EnvironmentVariables": {"SCORER_HOME": str(home), "PATH": _job_path_env()},
+        "StandardOutPath": str(home / "logs" / "daily.out.log"),
+        "StandardErrorPath": str(home / "logs" / "daily.err.log"),
+        "RunAtLoad": False,
+    }
+    return plistlib.dumps(d, sort_keys=False).decode("utf-8")
+
+
+def cron_line(home: Path, hour: int, minute: int) -> str:
+    # cron treats a bare % as newline -> escape it.
+    cmd = _job_shell(home).replace("%", r"\%")
+    log = home / "logs" / "daily.log"
+    return (f'{minute} {hour} * * * SCORER_HOME="{home}" PATH="{_job_path_env()}" '
+            f'/bin/sh -c \'{cmd}\' >> "{log}" 2>&1 {CRON_TAG}')
+
+
+def _run(cmd: list[str], stdin: str | None = None):
+    import subprocess
+    return subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=20)
+
+
+def _diff(old: str, new: str, name: str, what: str) -> str:
+    return "\n".join(difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="",
+                                          fromfile=f"{name} (current)", tofile=f"{name} ({what})"))
+
+
+def _apply_gate(label: str, diff: str, target: str, *, yes: bool, dry_run: bool) -> int | None:
+    """Print diff; return an rc to stop with, or None to proceed."""
+    print(diff)
+    if dry_run:
+        print(f"{label}: dry run, {target} not changed")
+        return 0
+    if not yes and not _confirm(f"Apply to {target}? [y/N] "):
+        print(f"{label}: skipped")
+        return 1
+    return None
+
+
+def _schedule_launchd(home: Path, hm, *, yes, dry_run, uninstall) -> int:
+    plist = _launchagents_dir() / f"{LABEL}.plist"
+    launchctl = os.environ.get("SCORER_LAUNCHCTL") or "launchctl"
+    domain = f"gui/{os.getuid()}"
+    old = plist.read_text(encoding="utf-8") if plist.exists() else ""
+    new = "" if uninstall else plist_text(home, hm.hour, hm.minute)
+    if old == new:
+        print(f"schedule: {plist} already up to date")
+        return 0
+    rc = _apply_gate("schedule", _diff(old, new, str(plist), "uninstall" if uninstall else "install"),
+                     str(plist), yes=yes, dry_run=dry_run)
+    if rc is not None:
+        return rc
+    if old:
+        _run([launchctl, "bootout", domain, str(plist)])  # ignore "not loaded"
+    if uninstall:
+        plist.unlink()
+        print(f"schedule: removed {plist}")
+        return 0
+    (home / "logs").mkdir(parents=True, exist_ok=True)
+    _atomic_write(plist, new)
+    r = _run([launchctl, "bootstrap", domain, str(plist)])
+    if r.returncode != 0:
+        print(f"schedule: launchctl bootstrap failed ({r.returncode}): {(r.stderr or '').strip()[:200]}",
+              file=sys.stderr)
+        return 1
+    print(f"schedule: loaded {LABEL} daily at {hm.hour:02d}:{hm.minute:02d}")
+    return 0
+
+
+def _schedule_cron(home: Path, hm, *, yes, dry_run, uninstall) -> int:
+    crontab = os.environ.get("SCORER_CRONTAB") or "crontab"
+    r = _run([crontab, "-l"])
+    old = r.stdout if r.returncode == 0 else ""  # "no crontab for user" -> empty
+    kept = [l for l in old.splitlines() if not l.rstrip().endswith(CRON_TAG)]
+    if not uninstall:
+        kept.append(cron_line(home, hm.hour, hm.minute))
+    new = "\n".join(kept) + "\n" if kept else ""
+    if new == old or (not old.strip() and not new.strip()):
+        print("schedule: crontab already up to date")
+        return 0
+    rc = _apply_gate("schedule", _diff(old, new, "crontab", "uninstall" if uninstall else "install"),
+                     "crontab", yes=yes, dry_run=dry_run)
+    if rc is not None:
+        return rc
+    (home / "logs").mkdir(parents=True, exist_ok=True)
+    r = _run([crontab, "-"], stdin=new)
+    if r.returncode != 0:
+        print(f"schedule: crontab write failed: {(r.stderr or '').strip()[:200]}", file=sys.stderr)
+        return 1
+    print("schedule: crontab updated")
+    return 0
+
+
+def run_schedule(*, yes: bool, dry_run: bool, uninstall: bool) -> int:
+    from .model import scorer_home
+    home = scorer_home().expanduser().resolve()
+    hm = _report_time()
+    fn = _schedule_launchd if _scheduler() == "launchd" else _schedule_cron
+    return fn(home, hm, yes=yes, dry_run=dry_run, uninstall=uninstall)
+
+
+def ensure_default_config(*, dry_run: bool) -> None:
+    from .model import scorer_home
+    p = scorer_home() / "config.toml"
+    if p.exists():
+        return
+    if dry_run:
+        print(f"config: would write default {p}")
+        return
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(DEFAULT_CONFIG, encoding="utf-8")
+    print(f"config: wrote default {p}")
+
+
+def run_install(*, agents, claude_settings, codex_home, yes, dry_run, uninstall,
+                schedule: bool | None = None) -> int:
+    """`schedule=None` -> on unless env SCORER_NO_SCHEDULE=1 (cli has no --no-schedule yet)."""
+    if schedule is None:
+        schedule = os.environ.get("SCORER_NO_SCHEDULE") not in ("1", "true", "yes")
     rc = 0
+    if not uninstall:
+        ensure_default_config(dry_run=dry_run)
     for agent in agents:
         if agent == "claude":
             rc |= _one("claude", Path(os.path.expanduser(claude_settings)), "claude",
@@ -193,4 +368,6 @@ def run_install(*, agents, claude_settings, codex_home, yes, dry_run, uninstall)
             if not uninstall:
                 for n in _codex_notes(home):
                     print(n)
+    if schedule:
+        rc |= run_schedule(yes=yes, dry_run=dry_run, uninstall=uninstall)
     return rc

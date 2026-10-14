@@ -48,6 +48,26 @@ def _realistic(src: str, sample: dict, dst: Path) -> Path:
     return dst
 
 
+@pytest.fixture(autouse=True)
+def fake_schedulers(tmp_path, monkeypatch):
+    """Never touch ~/Library/LaunchAgents, real launchctl or the real crontab."""
+    d = tmp_path / "fakebin"
+    d.mkdir()
+    log = d / "calls.log"
+    cron = d / "crontab.txt"
+    (d / "launchctl").write_text(f'#!/bin/sh\necho "$@" >> "{log}"\n')
+    (d / "crontab").write_text(
+        f'#!/bin/sh\nif [ "$1" = "-l" ]; then [ -f "{cron}" ] || {{ echo "no crontab" >&2; exit 1; }}; '
+        f'cat "{cron}"; else echo "crontab $@" >> "{log}"; cat > "{cron}"; fi\n')
+    for f in ("launchctl", "crontab"):
+        (d / f).chmod(0o755)
+    agents_dir = tmp_path / "LaunchAgents"
+    monkeypatch.setenv("SCORER_LAUNCHAGENTS_DIR", str(agents_dir))
+    monkeypatch.setenv("SCORER_LAUNCHCTL", str(d / "launchctl"))
+    monkeypatch.setenv("SCORER_CRONTAB", str(d / "crontab"))
+    return {"agents_dir": agents_dir, "log": log, "cron": cron}
+
+
 @pytest.fixture
 def claude_file(tmp_path):
     return _realistic("~/.claude/settings.json", SAMPLE_CLAUDE, tmp_path / "settings.json")
@@ -67,7 +87,7 @@ def scorer_groups(data: dict) -> dict:
 
 
 def inst(claude_file, codex_home, agents=("claude",), **kw):
-    opts = dict(yes=True, dry_run=False, uninstall=False)
+    opts = dict(yes=True, dry_run=False, uninstall=False, schedule=False)
     opts.update(kw)
     return run_install(agents=agents, claude_settings=str(claude_file), codex_home=str(codex_home), **opts)
 
@@ -182,3 +202,104 @@ def test_codex_flag_hint_suppressed_when_enabled(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "[features]" not in out and "trusted" in out
     assert not (tmp_path / "hooks.json").exists()
+
+
+# --- daily schedule + default config ------------------------------------------
+
+def sched(**kw):
+    opts = dict(agents=(), claude_settings="unused", codex_home="unused", yes=True, dry_run=False,
+                uninstall=False, schedule=True)
+    opts.update(kw)
+    return run_install(**opts)
+
+
+def calls(fs) -> list[str]:
+    return fs["log"].read_text().splitlines() if fs["log"].exists() else []
+
+
+def test_launchd_install_idempotent_uninstall(fake_schedulers, scorer_home, monkeypatch):
+    import plistlib
+    monkeypatch.setenv("SCORER_SCHEDULER", "launchd")
+    scorer_home.mkdir(parents=True)
+    (scorer_home / "config.toml").write_text('report_time = "07:45"\n')
+    plist = fake_schedulers["agents_dir"] / "com.scorer.daily.plist"
+    assert sched() == 0
+    d = plistlib.loads(plist.read_bytes())
+    assert d["Label"] == "com.scorer.daily"
+    assert d["StartCalendarInterval"] == {"Hour": 7, "Minute": 45}
+    home = str(scorer_home.resolve())
+    assert d["EnvironmentVariables"]["SCORER_HOME"] == home and d["EnvironmentVariables"]["PATH"]
+    assert d["StandardOutPath"].startswith(home + "/logs") and d["StandardErrorPath"].startswith(home)
+    cmd = d["ProgramArguments"][-1]
+    assert "-m scorer ingest --since 2d &&" in cmd and "-m scorer report --day today >" in cmd
+    assert '$SCORER_HOME/reports/$(date +%F).md' in cmd
+    assert (scorer_home / "logs").is_dir()
+    c = calls(fake_schedulers)
+    assert len(c) == 1 and c[0].startswith("bootstrap gui/") and c[0].endswith(str(plist))
+
+    assert sched() == 0  # unchanged -> no launchctl calls
+    assert len(calls(fake_schedulers)) == 1
+
+    (scorer_home / "config.toml").write_text('report_time = "18:00"\n')
+    assert sched() == 0  # changed -> bootout then bootstrap
+    assert [x.split()[0] for x in calls(fake_schedulers)] == ["bootstrap", "bootout", "bootstrap"]
+    assert plistlib.loads(plist.read_bytes())["StartCalendarInterval"] == {"Hour": 18, "Minute": 0}
+
+    assert sched(uninstall=True) == 0
+    assert not plist.exists()
+    assert calls(fake_schedulers)[-1].startswith("bootout")
+
+
+def test_launchd_dry_run_and_decline(fake_schedulers, monkeypatch, capsys):
+    monkeypatch.setenv("SCORER_SCHEDULER", "launchd")
+    plist = fake_schedulers["agents_dir"] / "com.scorer.daily.plist"
+    assert sched(yes=False, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "+<plist" in out or "+<?xml" in out
+    assert not plist.exists() and calls(fake_schedulers) == []
+    monkeypatch.setattr("builtins.input", lambda *_: "n")
+    assert sched(yes=False) == 1
+    assert not plist.exists() and calls(fake_schedulers) == []
+
+
+def test_cron_install_keeps_other_lines_and_uninstall(fake_schedulers, monkeypatch):
+    monkeypatch.setenv("SCORER_SCHEDULER", "cron")
+    fake_schedulers["cron"].write_text("MAILTO=x\n0 1 * * * backup.sh\n")
+    assert sched() == 0
+    lines = fake_schedulers["cron"].read_text().splitlines()
+    assert lines[:2] == ["MAILTO=x", "0 1 * * * backup.sh"] and len(lines) == 3
+    assert lines[2].startswith("0 18 * * * ") and lines[2].endswith("# scorer-daily")
+    assert r"date +\%F" in lines[2] and "date +%F" not in lines[2]  # cron % escaping
+    assert sched() == 0
+    assert len(fake_schedulers["cron"].read_text().splitlines()) == 3
+    assert sched(uninstall=True) == 0
+    assert fake_schedulers["cron"].read_text() == "MAILTO=x\n0 1 * * * backup.sh\n"
+
+
+def test_cron_no_existing_crontab(fake_schedulers, monkeypatch):
+    monkeypatch.setenv("SCORER_SCHEDULER", "cron")
+    assert sched(dry_run=True) == 0
+    assert not fake_schedulers["cron"].exists()
+    assert sched() == 0
+    assert fake_schedulers["cron"].read_text().count("# scorer-daily") == 1
+
+
+def test_no_schedule_env_and_flag(fake_schedulers, monkeypatch):
+    monkeypatch.setenv("SCORER_SCHEDULER", "launchd")
+    monkeypatch.setenv("SCORER_NO_SCHEDULE", "1")
+    assert sched(schedule=None) == 0
+    assert sched(schedule=False) == 0
+    assert not fake_schedulers["agents_dir"].exists() and calls(fake_schedulers) == []
+
+
+def test_default_config_written_once(fake_schedulers, scorer_home, tmp_path):
+    import tomllib
+    assert inst(tmp_path / "s.json", tmp_path, dry_run=True) == 0
+    assert not (scorer_home / "config.toml").exists()
+    assert inst(tmp_path / "s.json", tmp_path) == 0
+    cfg = scorer_home / "config.toml"
+    text = cfg.read_text()
+    assert 'report_time = "18:00"' in text and tomllib.loads(text) == {}  # all commented
+    cfg.write_text('report_time = "09:00"\n')
+    inst(tmp_path / "s.json", tmp_path)
+    assert cfg.read_text() == 'report_time = "09:00"\n'
