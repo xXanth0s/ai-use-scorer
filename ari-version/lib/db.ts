@@ -2,10 +2,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Report, Session, SessionSummary } from './types';
-export const dataDir = resolve(/* turbopackIgnore: true */ process.env.AI_SESSION_DATA_DIR || (process.env.HDYAI_HOSTED==='1'?'/tmp/hdyai-hosted':'.local'));
-mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+const demo = process.env.HDYAI_DEMO === '1';
+export const dataDir = resolve(/* turbopackIgnore: true */ process.env.AI_SESSION_DATA_DIR || (demo ? 'demo-data' : process.env.HDYAI_HOSTED==='1'?'/tmp/hdyai-hosted':'.local'));
+if (!demo) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 const globalDb = globalThis as typeof globalThis & { sessionDb?: DatabaseSync };
 export function db() {
+  if (!globalDb.sessionDb && demo) {
+    // Bundled synthetic reports; the deployment filesystem is read-only.
+    globalDb.sessionDb = new DatabaseSync(resolve(/* turbopackIgnore: true */ process.cwd(), 'demo-data', 'sessions.sqlite'), { readOnly: true });
+  }
   if (!globalDb.sessionDb) {
     const d = new DatabaseSync(resolve(dataDir, 'sessions.sqlite'));
     d.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;

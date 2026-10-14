@@ -1,4 +1,6 @@
 export function assertLocal(request: Request) {
+  // The read-only demo serves bundled synthetic data publicly; write routes are refused in proxy.ts.
+  if (process.env.HDYAI_DEMO === '1') return;
   const host = new URL(`http://${request.headers.get('host') || 'invalid'}`).hostname;
   if(!['127.0.0.1','localhost','[::1]'].includes(host)) throw new Error('This app is available on localhost only.');
   const origin=request.headers.get('origin');
