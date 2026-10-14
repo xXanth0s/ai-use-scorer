@@ -322,7 +322,7 @@ class _Parser:
             if kind == "bash" or name == "Bash":
                 cmd = inp.get("command") or ""
                 intent = _safe(classify.bash_intent, cmd)
-                args = cmd[:MAX_ARGS]
+                args = (_safe(classify.summarize_command, cmd, MAX_ARGS) or cmd)[:MAX_ARGS]
             elif inp.get("file_path") or inp.get("notebook_path"):
                 args = str(inp.get("file_path") or inp.get("notebook_path"))[:MAX_ARGS]
             elif inp.get("pattern") or inp.get("path"):
@@ -349,9 +349,13 @@ class _Parser:
                 if p:
                     a, r = _edit_counts(name, inp, None)
                     self.edits[tid] = [FileEdit(tid, p, _safe(classify.manifest_dir, p), a, r)]
-            elif intent == "edit":
+            elif kind == "bash" or name == "Bash":
+                # every written path, whatever the aggregated intent (`cat > f <<EOF … && pytest` is "test")
                 paths = _safe(classify.bash_edit_paths, inp.get("command") or "") or []
-                self.edits[tid] = [FileEdit(tid, p, _safe(classify.manifest_dir, p)) for p in paths]
+                cwd = e.get("cwd")
+                paths = [os.path.join(cwd, p) if cwd and not os.path.isabs(p) else p for p in paths]
+                if paths:
+                    self.edits[tid] = [FileEdit(tid, p, _safe(classify.manifest_dir, p)) for p in paths]
 
     def _tool_results(self, e: dict, t: datetime | None) -> set:
         """Mark results on their tool calls; returns the turn idxs of the matched calls."""

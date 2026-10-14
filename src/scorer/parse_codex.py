@@ -72,6 +72,14 @@ def js_commands(src: str) -> list[str]:
     return out
 
 
+def _summary(cmd: str | None) -> str:
+    """args_summary: keeps the deciding segment visible for commands longer than ARGS_MAX."""
+    try:
+        return classify.summarize_command(cmd or "", ARGS_MAX)[:ARGS_MAX]
+    except Exception:
+        return (cmd or "")[:ARGS_MAX]
+
+
 def aggregate_intent(cmds: list[str]) -> str | None:
     intents = [classify.bash_intent(c) for c in cmds if c]
     if not intents:
@@ -485,11 +493,13 @@ class _Parser:
             if not err and intent in ("test", "build") and isinstance(out, str) and output_failed(out):
                 err = True  # exit status masked by a pipe / `; echo`
             ini, rule = self._initiator(parent["turn"], intent)
-            self._tool(ToolCall(turn_idx=parent["turn"], tool_use_id=item.get("id") or f"{parent['cid']}:{parent['kids']}",
+            kid_id = item.get("id") or f"{parent['cid']}:{parent['kids']}"
+            self._tool(ToolCall(turn_idx=parent["turn"], tool_use_id=kid_id,
                                 name="exec_command", kind=_kind("exec_command"), bash_intent=intent,
-                                initiator=ini, initiator_rule=rule, args_summary=cmd[:ARGS_MAX], started_at=started,
+                                initiator=ini, initiator_rule=rule, args_summary=_summary(cmd), started_at=started,
                                 duration_ms=dur, is_error=bool(err), has_result=True, sidechain_id=self.side,
                                 cwd=item.get("cwd") or self.cwd))
+            self._bash_edits(kid_id, [cmd], item.get("cwd"))
         elif ty == "FileChange":
             parent = self._parent_call()
             if parent is None:
@@ -538,6 +548,21 @@ class _Parser:
                 self.compaction_ts.append(d)
                 self.events.append(Event("compaction", ts, idx, {}))
 
+    def _bash_edits(self, tuid: str, cmds: list[str], cwd: str | None = None) -> None:
+        """FileEdits for every path a shell command writes, whatever its aggregated intent."""
+        seen = set()
+        for c in cmds:
+            try:
+                paths = classify.bash_edit_paths(c or "")
+            except Exception:
+                paths = []
+            for p in paths:
+                if cwd and not os.path.isabs(p):
+                    p = os.path.join(cwd, p)
+                if p not in seen:
+                    seen.add(p)
+                    self._edit(tuid, p, 0, 0)
+
     def _edit(self, tuid: str, path: str, added: int, removed: int) -> None:
         if path and not os.path.isabs(path) and self.cwd:
             path = os.path.join(self.cwd, path)
@@ -562,6 +587,12 @@ class _Parser:
             if not info["is_error"] and intent in ("test", "build") and output_failed(info.get("out")):
                 info["is_error"] = True  # exit status masked by a pipe / `; echo`
             ini, rule = self._initiator(info["turn"], intent)
+            if info["patch"] is None and summary:
+                summary = _summary(summary)
+            elif info["patch"] is None and info.get("cmds"):
+                summary = _summary(" ; ".join(info["cmds"]))
+            if info["patch"] is None and _kind(name) == "bash":
+                self._bash_edits(cid, info.get("cmds") or ([cmd] if cmd else []), info.get("cwd"))
             self._tool(ToolCall(turn_idx=info["turn"], tool_use_id=cid, name=name, kind=_kind(name),
                                 bash_intent=intent, initiator=ini, initiator_rule=rule,
                                 args_summary=(summary or "")[:ARGS_MAX] or None, started_at=info["ts"],

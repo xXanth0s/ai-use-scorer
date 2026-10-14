@@ -313,3 +313,14 @@ def test_masked_failure_only_for_test_build_intents(tmp_path):
 def test_interrupted_bash_is_error(tmp_path):
     tc = _bash_session(tmp_path, "pytest", "partial", tur={"stdout": "partial", "stderr": "", "interrupted": True})
     assert tc.is_error
+
+
+def test_bash_edit_paths_recorded_whatever_the_intent(tmp_path):
+    body = "x = 1\n" * 200
+    cmd = f"cat > a.py <<'EOF'\n{body}EOF\npytest -q tests/test_a.py"
+    tc = _bash_session(tmp_path, cmd, "1 passed in 0.1s")
+    assert tc.bash_intent == "test"
+    # long command: summary keeps the edit and the deciding pytest segment, drops the heredoc body
+    assert len(cmd) > 500 and "pytest -q tests/test_a.py" in tc.args_summary and "x = 1" not in tc.args_summary
+    b = parse(str(tmp_path / "00000000-0000-4000-8000-0000000000b1.jsonl"))
+    assert [e.path for e in b.file_edits] == ["/tmp/r/a.py"]

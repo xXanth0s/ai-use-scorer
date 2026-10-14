@@ -64,8 +64,13 @@ def test_apply_patch_forked_subagent_skips_inherited_history():
     assert len(b.api_calls) == 14 and all(a.sidechain_id == b.session.id for a in b.api_calls)
     edits = [c for c in b.tool_calls if c.kind == "edit"]
     assert len(edits) == 2 and all(c.name == "apply_patch" and c.has_result for c in edits)
-    assert sorted((e.lines_added, e.lines_removed) for e in b.file_edits) == [(6, 0), (59, 0)]
-    assert {e.tool_use_id for e in b.file_edits} == {c.tool_use_id for c in edits}
+    patch_ids = {c.tool_use_id for c in edits}
+    patch_edits = [e for e in b.file_edits if e.tool_use_id in patch_ids]
+    assert sorted((e.lines_added, e.lines_removed) for e in patch_edits) == [(6, 0), (59, 0)]
+    # shell writes (here a `mkdir`) also become FileEdits, whatever the aggregated intent
+    shell_ids = {c.tool_use_id for c in b.tool_calls if c.kind == "bash"}
+    assert {e.tool_use_id for e in b.file_edits} - patch_ids <= shell_ids
+    assert any(e.tool_use_id in shell_ids for e in b.file_edits)
     assert not any(c.name == "exec" for c in b.tool_calls)  # wrappers are named after the inner tool
 
 

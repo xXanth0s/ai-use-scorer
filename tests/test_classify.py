@@ -186,3 +186,29 @@ def test_is_relevant(repo):
     assert is_relevant("pytest tests/test_bar.py", "/elsewhere", [py_file]) is None
     assert is_relevant("pnpm test", os.path.join(r, "web"), [py_file]) is None
     assert is_relevant("pytest", r, []) == "relevant-broad"
+
+
+@pytest.mark.parametrize("cmd,intents,edit_first", [
+    ("cat > a.py <<'EOF'\nx\nEOF\npytest -q", ["edit", "test"], True),
+    ("sed -i s/a/b/ f.py && npx tsc --noEmit", ["edit", "build"], True),
+    ("pytest -q > out.log", ["test"], False),                 # redirect inside the test segment
+    ("pytest 2>&1 | tee out.txt", ["test", "edit"], False),   # write after the check
+    ("cd web && pnpm test", ["test"], False),
+])
+def test_segment_intents(cmd, intents, edit_first):
+    assert classify.segment_intents(cmd) == intents
+    assert classify.edit_precedes_check(cmd) is edit_first
+
+
+def test_summarize_command():
+    short = "pytest -q"
+    assert classify.summarize_command(short) == short
+    long = "python3 - <<'PY'\n" + "print('pytest')\n" * 100 + "PY\ncd web && FOO=1 pnpm test 2>&1 | tail -5"
+    s = classify.summarize_command(long, 500)
+    assert len(s) <= 500 and "pnpm test" in s and "print" not in s
+    assert classify.bash_intent(s) == "test"
+    assert classify.is_relevant(s, "/r", ["/r/web/a.ts"]) is not None
+    huge = " && ".join(f"echo {i} > f{i}.txt" for i in range(200)) + " && pytest -q tests/test_x.py"
+    s2 = classify.summarize_command(huge, 500)
+    assert len(s2) <= 500 and s2.endswith("pytest -q tests/test_x.py") and " … " in s2
+    assert classify.bash_intent(s2) == "test"

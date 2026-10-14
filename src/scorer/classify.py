@@ -7,6 +7,9 @@
   manifest_dir(path, stop=None) -> str | None   # nearest dir with package.json|pyproject.toml|go.mod|Cargo.toml
   is_relevant(test_cmd, test_cwd, edited_paths) -> str | None  # "relevant" | "relevant-broad" | None
   segments(cmd) -> list[Segment]          # parsed segments (argv after wrapper stripping, redirects, cd)
+  segment_intents(cmd) -> list[str]       # per-segment intent, in order
+  edit_precedes_check(cmd) -> bool        # an edit segment before the first test|build segment
+  summarize_command(cmd, cap=500) -> str  # args_summary that keeps the deciding segment visible
 
 Splitting: commands are split on `&&`, `||`, `;`, `|`, `&` and newlines with
 shlex (quotes respected); unbalanced quotes fall back to a regex split.
@@ -107,6 +110,9 @@ def _take_redirects(argv: list[str]) -> tuple[list[str], list[str]]:
         m = _REDIR.match(t)
         if m and not t.startswith(">(") and (m.group(1) or t[0] == ">"):
             tgt = m.group(3)
+            if tgt == "&" and i + 1 < len(argv) and (argv[i + 1].isdigit() or argv[i + 1] == "-"):
+                i += 2  # `>&1` / `2>&1` (shlex splits the fd off)
+                continue
             if not tgt:
                 tgt = argv[i + 1] if i + 1 < len(argv) else ""
                 i += 1
@@ -342,6 +348,58 @@ def _bash_intent(cmd: str) -> str:
         if _RANK[k] < _RANK[best]:
             best = k
     return best
+
+
+def segment_intents(cmd: str) -> list[str]:
+    """Intent of each segment, in command order (cd-only segments omitted)."""
+    return [classify_segment(seg) for seg in segments(cmd)]
+
+
+def edit_precedes_check(cmd: str) -> bool:
+    """True if an edit segment comes before the first test|build segment (`cat > f <<EOF … && pytest`)."""
+    first_edit = None
+    for i, k in enumerate(segment_intents(cmd)):
+        if k == "edit" and first_edit is None:
+            first_edit = i
+        if k in ("test", "build"):
+            return first_edit is not None
+    return False
+
+
+def _seg_text(seg: Segment) -> str:
+    parts = [shlex.join(seg.argv)] if seg.argv else []
+    parts += [f"> {shlex.quote(t)}" for t in seg.redirects]
+    return " ".join(parts)
+
+
+def summarize_command(cmd: str | None, cap: int = 500) -> str:
+    """args_summary for a shell command. <= cap chars: unchanged. Longer: rebuilt from parsed segments
+    (heredoc bodies dropped, `cd` kept, joined with " ; ") so it re-classifies like the original; if that
+    is still too long: first segments up to ~200 chars + " … " + the deciding (highest-priority) segment."""
+    cmd = cmd or ""
+    if len(cmd) <= cap:
+        return cmd
+    segs = segments(cmd)
+    if not segs:
+        return cmd[:cap]
+    texts, cwd = [], None
+    for seg in segs:
+        t = _seg_text(seg)
+        if seg.cwd != cwd and seg.cwd is not None:
+            t = f"cd {shlex.quote(seg.cwd)} ; {t}"
+        cwd = seg.cwd
+        texts.append(t)
+    full = " ; ".join(texts)
+    if len(full) <= cap:
+        return full
+    kinds = [classify_segment(sg) for sg in segs]
+    best = min(range(len(segs)), key=lambda i: _RANK[kinds[i]])
+    head, i = "", 0
+    while i < best and len(head) + len(texts[i]) + 3 <= 200:
+        head = f"{head} ; {texts[i]}" if head else texts[i]
+        i += 1
+    tail = texts[best][: max(0, cap - len(head) - 5)]
+    return (f"{head} ; … ; {tail}" if head else f"… ; {tail}")[:cap]
 
 
 def bash_git_subkind(cmd: str) -> str | None:

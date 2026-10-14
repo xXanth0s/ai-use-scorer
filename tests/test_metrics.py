@@ -370,3 +370,32 @@ def test_subagent_threads_excluded_from_human_lanes(conn):
     assert val(conn, rid, "tokens_in") == 1100
     assert val(conn, rid, "model_mix:gpt-6-astra") == 2
     assert val(conn, rid, "subagents") == 1
+
+
+# --- one call that edits and then checks verifies itself -------------------------------------------
+
+def _self_verify(tmp_path, cmd, error=False):
+    (tmp_path / "pyproject.toml").write_text("")
+    for f in (classify.manifest_dir, classify._walk, classify._has_manifest, classify._is_relevant):
+        f.cache_clear()
+    f = str(tmp_path / "a.py")
+    calls = [ToolCall(0, "b1", "Bash", kind="bash", bash_intent=classify.bash_intent(cmd), args_summary=cmd,
+                      started_at=ts(1), has_result=True, is_error=error)]
+    return Bundle(Session("s1", "claude", cwd=str(tmp_path)), turns=[turn(0, 0, 50)], tool_calls=calls,
+                  file_edits=[FileEdit("b1", f)])
+
+
+def test_edit_then_test_in_one_call_is_verified(conn, tmp_path):
+    write(conn, _self_verify(tmp_path, "cat > a.py ; pytest -q"))
+    bs = metrics.verification_batches(conn, DAY)
+    assert len(bs) == 1 and bs[0].tier == "verified_pass" and bs[0].verifier_call_id == bs[0].last_edit_call_id
+
+
+def test_edit_then_failing_test_in_one_call(conn, tmp_path):
+    write(conn, _self_verify(tmp_path, "sed -i s/a/b/ a.py && pytest -q", error=True))
+    assert [b.tier for b in metrics.verification_batches(conn, DAY)] == ["verified_fail"]
+
+
+def test_test_with_output_redirect_is_not_an_edit_batch(conn, tmp_path):
+    write(conn, _self_verify(tmp_path, "pytest -q > out.log"))
+    assert metrics.verification_batches(conn, DAY) == []

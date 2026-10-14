@@ -398,25 +398,31 @@ def verification_batches(conn, day: str | None = None) -> list[Batch]:
             continue
         lst = calls.get(t["id"], [])
         cwd = t["s_cwd"]
-        batches: list[tuple[Batch, int]] = []   # (batch, index of last edit)
+        batches: list[tuple[Batch, int]] = []   # (batch, index where the verifier scan starts)
         cur: Batch | None = None
         for i, c in enumerate(lst):
             if _is_edit(c):
                 if cur is None:
                     cur = Batch(t["session_id"], t["id"], t["day"], [], [], c["id"], order=(ti, i))
-                    batches.append((cur, i))
+                    batches.append((cur, i + 1))
                 cur.edit_call_ids.append(c["id"])
                 cur.last_edit_call_id = c["id"]
                 for p in _edit_paths(c, fe):
                     if p not in cur.paths:
                         cur.paths.append(p)
-                batches[-1] = (cur, i)
+                batches[-1] = (cur, i + 1)
             elif _is_check(c):
                 cur = None
-        for bi, (b, last_i) in enumerate(batches):
+                # `cat > f <<EOF … && pytest`: one call edits, then checks -> its own batch, verified by itself
+                own = [r["path"] for r in fe.get(c["id"], []) if r["path"]]
+                if own and classify.edit_precedes_check(c["args_summary"] or ""):
+                    b = Batch(t["session_id"], t["id"], t["day"], [c["id"]], list(dict.fromkeys(own)), c["id"],
+                              order=(ti, i))
+                    batches.append((b, i))
+        for bi, (b, scan_from) in enumerate(batches):
             b.followed_by_edit = bi + 1 < len(batches)
             inspected = None
-            for c in lst[last_i + 1:]:
+            for c in lst[scan_from:]:
                 if _is_check(c):
                     if not c["has_result"]:
                         continue
