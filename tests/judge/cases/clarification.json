@@ -1,0 +1,18 @@
+{
+  "summary": "previous turn: end=stop_hook\ntool calls: 2, errors: 0\n- Edit :: src/export.py\n- Bash intent=test :: pytest tests/test_export.py",
+  "prompt": "I mean the staging database, the one in config/staging.toml.",
+  "model_output": {
+    "event": "clarification",
+    "cause": "info_missing",
+    "detection": "unknown",
+    "evidence": "I mean the staging database",
+    "confidence": 0.75,
+    "defect_caught": false,
+    "resolved": null
+  },
+  "expect": {
+    "event": "clarification"
+  },
+  "expect_regex": "clarification",
+  "name": "clarification"
+}

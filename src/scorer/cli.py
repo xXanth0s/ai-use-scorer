@@ -97,13 +97,44 @@ def check(db):
 @click.option("--day", default=None, help="today | YYYY-MM-DD")
 @click.option("--days", type=int, default=None)
 @click.option("--db", default=None)
-def report(day, days, db):
-    """Markdown daily report (spec §2)."""
-    from .db import connect
-    from .report import render
+@click.option("--no-judge", is_flag=True, help="Skip the (cached) correction-episode judge.")
+def report(day, days, db, no_judge):
+    """Markdown daily report (spec §2). Runs the cached judge for the day first."""
+    from .db import connect, latest_run_id
     if not day and not days:
         day = "today"
-    click.echo(render(connect(db), day=day, days=days))
+    conn = connect(db)
+    judge_note = None
+    if not no_judge:
+        try:
+            # Bounded for interactive use: <= REPORT_MAX_CALLS uncached turns (most recent first),
+            # REPORT_WORKERS threads, REPORT_TIMEOUT_S overall. `scorer judge` pre-warms the rest.
+            from datetime import datetime, timedelta, timezone
+            from .judge import REPORT_MAX_CALLS, REPORT_TIMEOUT_S, REPORT_WORKERS, resolve_day, run_judge
+            from .model import local_day
+            import time
+            run_id = latest_run_id(conn)
+            if run_id is not None:
+                now = datetime.now(timezone.utc)
+                jdays = ([local_day(now - timedelta(days=i)) for i in range(days)] if days
+                         else [resolve_day(day)])
+                t_end = time.monotonic() + REPORT_TIMEOUT_S
+                labelled = total = 0
+                budget = REPORT_MAX_CALLS
+                for d in jdays:
+                    left = t_end - time.monotonic()
+                    st = run_judge(conn, run_id, day=d, max_calls=max(0, budget) if left > 0 else 0,
+                                   workers=REPORT_WORKERS, timeout=max(0.0, left))
+                    budget -= st["called"]
+                    labelled += st["labelled"]
+                    total += st["n"]
+                judge_note = f"judge: {labelled} of {total} turns labelled"
+        except Exception as e:  # noqa: BLE001 - the report must render regardless
+            click.echo(f"judge skipped: {type(e).__name__}", err=True)
+    from .report import render
+    click.echo(render(conn, day=day, days=days))
+    if judge_note:
+        click.echo(f"\n_{judge_note}_")
 
 
 @cli.command()
@@ -116,11 +147,20 @@ def serve(port, db):
 
 
 @cli.command()
-@click.option("--limit", type=int, default=None)
+@click.option("--day", default="today", show_default=True, help="today | YYYY-MM-DD | all")
+@click.option("--limit", type=int, default=None, help="Judge at most N (most recent) turns.")
 @click.option("--db", default=None)
-def judge(limit, db):
-    """Label correction episodes with the LLM judge (cached)."""
+def judge(day, limit, db):
+    """Label correction episodes with the LLM judge (cached). Prints counts only."""
+    import time
     from .db import connect, latest_run_id
-    from .judge import run_judge
+    from .judge import resolve_day, run_judge
     conn = connect(db)
-    run_judge(conn, latest_run_id(conn), limit=limit)
+    t0 = time.monotonic()
+    st = run_judge(conn, latest_run_id(conn), limit=limit, day=None if day == "all" else resolve_day(day))
+    dt = time.monotonic() - t0
+    click.echo(f"judged {st['n']} turns ({st['cached']} cached, {st['called']} labelled, "
+               f"{st['errors']} with backend errors) in {dt:.1f}s; model={st['model']} chain={','.join(st['chain'])}")
+    click.echo("events: " + " ".join(f"{k}={v}" for k, v in sorted(st["dist"].items())))
+    click.echo("sources: " + " ".join(f"{k}={v}" for k, v in sorted(st["sources"].items()))
+               + ("  (regex = stand-in, confidence 0.3)" if "regex" in st["sources"] else ""))

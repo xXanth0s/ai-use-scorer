@@ -1,0 +1,18 @@
+{
+  "summary": "previous turn: end=stop_hook\ntool calls: 3, errors: 0\n- Bash intent=edit :: rm tests/test_api.py\n- Edit :: src/api.py\n- Bash intent=test :: pytest -q",
+  "prompt": "Please put the deleted tests back, they were important.",
+  "model_output": {
+    "event": "correction",
+    "cause": "instruction_violated",
+    "detection": "human_review",
+    "evidence": "restore the tests you deleted",
+    "confidence": 0.9,
+    "defect_caught": true,
+    "resolved": null
+  },
+  "expect": {
+    "event": "abstain"
+  },
+  "expect_regex": "new_requirement",
+  "name": "evidence_not_substring"
+}

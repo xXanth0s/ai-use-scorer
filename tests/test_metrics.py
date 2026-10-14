@@ -173,17 +173,35 @@ def test_golden7_hand_edit(conn):
     assert r["value"] == 1 and r["unit"] == "edits(partial)"
 
 
-def test_hand_edit_git_snapshot(conn):
-    calls = [ToolCall(0, "e1", "Edit", kind="edit", args_summary="/r/a.py", started_at=ts(1), has_result=True),
-             ToolCall(1, "e2", "Edit", kind="edit", args_summary="/r/c.py", started_at=ts(101), has_result=True)]
-    events = [Event("git_snapshot", ts(150), turn_idx=1, data={"git": {"changed": ["a.py", "b.py", "c.py"]}})]
-    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=[turn(0, 0, 10), turn(1, 100, 150)],
+def test_hand_edit_git_snapshots_three_stops(conn):
+    """changed_paths accumulates across Stops; only first appearances not touched by the agent count."""
+    calls = [ToolCall(0, "e1", "Edit", kind="edit", args_summary="/r/a.py", started_at=ts(10), has_result=True),
+             ToolCall(1, "e2", "Edit", kind="edit", args_summary="/r/c.py", started_at=ts(110), has_result=True)]
+    snap = lambda sec, idx, paths: Event("git_snapshot", ts(sec), idx, {"git": {"head": "h", "changed_paths": paths}})
+    events = [snap(50, 0, []),                                   # agent's a.py edit got committed
+              snap(150, 1, ["b.py", "c.py"]),                    # b.py: own hand edit; c.py: agent (this window)
+              snap(250, 2, ["a.py", "b.py", "c.py", "d.py"])]    # a.py: repair; d.py: own; b/c not re-counted
+    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=[turn(0, 0, 50), turn(1, 100, 150), turn(2, 200, 250)],
                        tool_calls=calls, file_edits=[FileEdit("e1", "/r/a.py"), FileEdit("e2", "/r/c.py")],
                        events=events))
     rid = run(conn)
-    assert mv(conn, rid, "H")["unit"] == "edits"
-    assert val(conn, rid, "H_repair") == 1   # a.py: agent-edited earlier in the session
-    assert val(conn, rid, "H_own") == 1      # b.py: never agent-edited
+    h = mv(conn, rid, "H")
+    assert h["unit"] == "edits" and h["value"] == 3
+    assert val(conn, rid, "H_repair") == 1
+    assert val(conn, rid, "H_own") == 2
+    notes = sorted(r[0] for r in conn.execute(
+        "SELECT note FROM metric_evidence e JOIN metric_value v ON v.id = e.metric_value_id"
+        " WHERE v.metric='H' AND v.scope_type='day'"))
+    assert notes == ["own: b.py", "own: d.py", "repair: a.py"]
+
+
+def test_hand_edit_snapshot_state_change(conn):
+    snap = lambda sec, idx, h: Event("git_snapshot", ts(sec), idx,
+                                     {"git": {"changed_paths": ["x.py"], "path_states": {"x.py": h}}})
+    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=[turn(0, 0, 50), turn(1, 100, 150)],
+                       events=[snap(50, 0, "h1"), snap(150, 1, "h2")]))
+    rid = run(conn)
+    assert val(conn, rid, "H_own") == 2   # appears, then changes again without an agent edit
 
 
 # --- golden 8: two sessions overlapping 120 s -> overlap 120; B ----------------------------------

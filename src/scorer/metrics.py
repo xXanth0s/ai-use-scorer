@@ -464,7 +464,28 @@ def _snapshot_paths(data) -> list[str] | None:
     return None
 
 
+def _snapshot_states(data) -> dict:
+    """Optional per-file state {path: hash} in a snapshot (data.git.path_states / file_hashes)."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return {}
+    if not isinstance(data, dict):
+        return {}
+    g = data.get("git") if isinstance(data.get("git"), dict) else data
+    for k in ("path_states", "file_hashes", "states"):
+        v = g.get(k)
+        if isinstance(v, dict):
+            return v
+    return {}
+
+
 def hand_edits(conn, day: str | None = None) -> dict:
+    """H: file_edit.user_modified rows + git-snapshot deltas. Snapshots (kind=git_snapshot, data.git.changed_paths
+    = everything differing from HEAD at that Stop) are diffed per session against the previous snapshot: a path
+    counts in the snapshot where it first appears (or its per-file state changes, if provided), unless an agent
+    edit touched it in that session since the previous snapshot. Repair = path agent-edited earlier in the session."""
     tmap = {t["id"]: t for t in _turns(conn)}
     um = _rows(conn, "SELECT fe.path, fe.tool_call_id, tc.turn_id FROM file_edit fe"
                      " JOIN tool_call tc ON tc.id = fe.tool_call_id WHERE fe.user_modified = 1")
@@ -473,41 +494,55 @@ def hand_edits(conn, day: str | None = None) -> dict:
     for r in um:
         ev.append({"turn_id": r["turn_id"], "tool_call_id": r["tool_call_id"],
                    "note": "user_modified: " + clip(r["path"], 60)})
-    snaps = _rows(conn, "SELECT session_id, turn_id, at, kind, data FROM event WHERE kind IN ('git_snapshot','hook')")
-    snaps = [s for s in snaps if s["turn_id"] is not None]
+    snaps = _rows(conn, "SELECT session_id, turn_id, at, data FROM event WHERE kind = 'git_snapshot'")
     repair = own = 0
     have_snap = False
     if snaps:
-        calls = _tool_calls(conn)
         fe = _file_edits(conn)
-        agent_turn: dict[int, set] = {}
-        for c in calls:
-            if _is_edit(c):
-                agent_turn.setdefault(c["turn_id"], set()).update(_edit_paths(c, fe))
-        for s in snaps:
-            ps = _snapshot_paths(s["data"])
-            if ps is None:
+        # per session: [(ts, paths)] of agent edits (tool ts, else turn start)
+        agent: dict[str, list] = {}
+        for c in _tool_calls(conn):
+            t = tmap.get(c["turn_id"])
+            if not t or not _is_edit(c):
+                continue
+            at = c["ts"] or t["start"]
+            if at:
+                agent.setdefault(t["session_id"], []).append((at, set(_edit_paths(c, fe))))
+        by_sess: dict[str, list] = {}
+        for sn in snaps:
+            at = parse_ts(sn["at"])
+            ps = _snapshot_paths(sn["data"])
+            if at is None or ps is None:
                 continue
             have_snap = True
-            t = tmap.get(s["turn_id"])
-            if not t or (day and t["day"] != day):
-                continue
-            touched = agent_turn.get(s["turn_id"], set())
-            prior: set = set()
-            for tid, pths in agent_turn.items():
-                tt = tmap.get(tid)
-                if tt and tt["session_id"] == t["session_id"] and tt["start"] and t["start"] and tt["start"] <= t["start"]:
-                    prior |= pths
-            for p in ps:
-                if _path_in(p, touched):
-                    continue
-                if _path_in(p, prior):
-                    repair += 1
-                    kind = "repair"
-                else:
-                    own += 1
-                    kind = "own"
-                ev.append({"turn_id": s["turn_id"], "tool_call_id": None, "note": f"{kind}: " + clip(p, 60)})
+            by_sess.setdefault(sn["session_id"], []).append((at, sn["turn_id"], ps, _snapshot_states(sn["data"])))
+        for sid, lst in by_sess.items():
+            lst.sort(key=lambda x: x[0])
+            prev_at, prev_paths, prev_states = None, set(), {}
+            for at, turn_id, ps, states in lst:
+                cur = set(ps)
+                # new = first appearance vs the previous snapshot, or per-file state changed (if provided)
+                new = [p for p in ps if p not in prev_paths
+                       or (states.get(p) is not None and prev_states.get(p) is not None
+                           and states[p] != prev_states[p])]
+                t = tmap.get(turn_id)
+                d = (t["day"] if t else None) or local_day(at)
+                window = set().union(*[pp for ts_, pp in agent.get(sid, [])
+                                       if (prev_at is None or ts_ > prev_at) and ts_ <= at])
+                before = set().union(*[pp for ts_, pp in agent.get(sid, [])
+                                       if prev_at is not None and ts_ <= prev_at])
+                if not day or d == day:
+                    for p in new:
+                        if _path_in(p, window):
+                            continue  # the agent changed it since the last snapshot
+                        if _path_in(p, before):
+                            repair += 1
+                            kind = "repair"
+                        else:
+                            own += 1
+                            kind = "own"
+                        ev.append({"turn_id": turn_id, "tool_call_id": None, "note": f"{kind}: " + clip(p, 60)})
+                prev_at, prev_paths, prev_states = at, cur, states
     return {"count": len(um) + repair + own, "user_modified": len(um), "repair": repair, "own": own,
             "partial": not have_snap, "evidence": ev}
 
