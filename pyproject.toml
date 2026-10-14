@@ -3,7 +3,7 @@ name = "scorer"
 version = "0.1.0"
 description = "Scores how a human uses coding agents (Claude Code, Codex) from local transcripts and hooks"
 requires-python = ">=3.11"
-dependencies = ["click>=8.1"]
+dependencies = ["click>=8.1", "anthropic>=0.40"]
 
 [project.optional-dependencies]
 judge = ["anthropic>=0.40"]

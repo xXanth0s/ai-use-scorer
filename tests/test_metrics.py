@@ -95,6 +95,7 @@ def _g6(tmp_path, *, error=False, has_result=True, initiator="agent"):
     classify.manifest_dir.cache_clear()
     classify._walk.cache_clear()
     classify._has_manifest.cache_clear()
+    classify._is_relevant.cache_clear()
     f = str(tmp_path / "a.py")
     calls = [
         ToolCall(0, "e1", "Edit", kind="edit", args_summary=f, started_at=ts(1), has_result=True),
@@ -147,6 +148,7 @@ def test_bash_edit_batch_and_irrelevant_test(conn, tmp_path):
     classify.manifest_dir.cache_clear()
     classify._walk.cache_clear()
     classify._has_manifest.cache_clear()
+    classify._is_relevant.cache_clear()
     calls = [
         ToolCall(0, "e1", "Bash", kind="bash", bash_intent="edit", args_summary="echo x > web/a.ts",
                  started_at=ts(1), has_result=True),

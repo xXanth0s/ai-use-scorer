@@ -144,6 +144,7 @@ def repo(tmp_path):
     (tmp_path / "pkg").mkdir()
     classify.manifest_dir.cache_clear()
     classify._has_manifest.cache_clear()
+    classify._is_relevant.cache_clear()
     classify._walk.cache_clear()
     return tmp_path
 

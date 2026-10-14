@@ -46,9 +46,15 @@ def _session_id_from_path(path: str) -> str:
     return b[-36:] if len(b) >= 36 else b
 
 
+# The judge's `claude -p` fallback runs with cwd = SCORER_HOME/judge; its project dir
+# slug contains this marker and must never be ingested as the human's own usage.
+JUDGE_SLUG_MARKER = "-scorer-judge"
+
+
 def discover_claude(root: str, since_days: int) -> list[str]:
     cutoff = time.time() - since_days * 86400
-    return sorted(p for p in glob.glob(os.path.join(root, "*", "*.jsonl")) if os.path.getmtime(p) >= cutoff)
+    return sorted(p for p in glob.glob(os.path.join(root, "*", "*.jsonl"))
+                  if os.path.getmtime(p) >= cutoff and JUDGE_SLUG_MARKER not in os.path.basename(os.path.dirname(p)))
 
 
 def discover_codex(root: str, since_days: int) -> list[str]:

@@ -60,10 +60,30 @@ def iso(d: datetime | None) -> str | None:
     return d.astimezone(timezone.utc).isoformat() if d else None
 
 
+def local_tz():
+    """Configured timezone (config.toml `timezone`), else the system tz."""
+    from .config import load
+    name = load().timezone
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo
+
+
 def local_day(ts: str | datetime | None) -> str | None:
-    """YYYY-MM-DD in the machine's local timezone."""
+    """Report day YYYY-MM-DD: configured tz, shifted by day_cutoff (default 04:00 ->
+    a turn at 02:30 belongs to the previous day). The ONLY day-bucketing function."""
+    from datetime import timedelta
+    from .config import load
     d = parse_ts(ts) if isinstance(ts, str) else ts
-    return d.astimezone().strftime("%Y-%m-%d") if d else None
+    if not d:
+        return None
+    c = load().day_cutoff
+    d = d.astimezone(local_tz()) - timedelta(hours=c.hour, minutes=c.minute)
+    return d.strftime("%Y-%m-%d")
 
 
 # --- vocabularies -----------------------------------------------------------
