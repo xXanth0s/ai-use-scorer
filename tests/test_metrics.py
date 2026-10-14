@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from scorer import classify, db, ingest, metrics
+from scorer import classify, config, db, ingest, metrics
 from scorer.model import (ApiCall, Bundle, Event, FileEdit, Session, ToolCall, Turn, local_day)
 
 T0 = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)   # noon UTC: same local day almost everywhere
@@ -16,9 +16,11 @@ def ts(sec: float) -> str:
 @pytest.fixture()
 def conn(tmp_path, monkeypatch):
     monkeypatch.setenv("SCORER_HOME", str(tmp_path / "home"))
+    config.load.cache_clear()
     c = db.connect(tmp_path / "x.db")
     yield c
     c.close()
+    config.load.cache_clear()
 
 
 def run(conn) -> int:
@@ -275,3 +277,48 @@ def test_tooling(conn):
         "SELECT note FROM metric_evidence e JOIN metric_value v ON v.id = e.metric_value_id"
         " WHERE v.metric='tooling:skill' AND v.scope_type='day'")}
     assert notes == {"skill:pdf:agent x2"}
+
+
+# --- day cutoff / timezone ---------------------------------------------------------------------------
+
+def test_day_cutoff_and_bounds(conn, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    (home / "config.toml").write_text('timezone = "Europe/Berlin"\nday_cutoff = "04:00"\n')
+    config.load.cache_clear()
+    # 2026-10-08 02:30 Berlin (CEST, UTC+2) = 00:30 UTC -> belongs to 2026-10-07
+    t230 = datetime(2026, 10, 8, 0, 30, tzinfo=timezone.utc)
+    assert local_day(t230) == "2026-10-07"
+    lo, hi = metrics.day_bounds("2026-10-07")
+    assert lo == datetime(2026, 10, 7, 2, 0, tzinfo=timezone.utc)   # 04:00 Berlin
+    assert hi == datetime(2026, 10, 8, 2, 0, tzinfo=timezone.utc)
+    turns = [Turn(0, t230.isoformat(), "x", agent_finished_at=(t230 + timedelta(minutes=10)).isoformat()),
+             # 03:30 -> 04:30 Berlin: split 30 min / 30 min across the cutoff
+             Turn(1, datetime(2026, 10, 8, 1, 30, tzinfo=timezone.utc).isoformat(), "y",
+                  agent_finished_at=datetime(2026, 10, 8, 2, 30, tzinfo=timezone.utc).isoformat())]
+    write(conn, Bundle(Session("s1", "claude"), turns=turns))
+    d7 = metrics.turn_intervals(conn, "2026-10-07")
+    d8 = metrics.turn_intervals(conn, "2026-10-08")
+    assert metrics.union_seconds(d7) == 600 + 1800
+    assert metrics.union_seconds(d8) == 1800
+    rid = run(conn)
+    assert val(conn, rid, "turns", scope_id="2026-10-07") == 2
+    assert val(conn, rid, "active_s", scope_id="2026-10-07") == 2400
+    assert val(conn, rid, "active_s", scope_id="2026-10-08") is None   # no turn starts on the 8th
+
+
+# --- stored cost wins; per-model cost/tokens ------------------------------------------------------
+
+def test_stored_cost_and_per_model(conn):
+    api = [ApiCall(0, "r1", model="claude-opus-5-5", input_tok=1000, cached_tok=2000, output_tok=300,
+                   cache_write_tok=500, cost_usd=1.23, at=ts(5)),
+           ApiCall(0, "r2", model="claude-opus-5-5", input_tok=1_000_000, output_tok=0, at=ts(6)),   # NULL cost
+           ApiCall(0, "r3", model="gpt-6-astra", input_tok=10, cached_tok=0, output_tok=5, cost_usd=0.5, at=ts(7))]
+    write(conn, Bundle(Session("s1", "claude"), turns=[turn(0, 0, 60)], api_calls=api))
+    rid = run(conn)
+    assert val(conn, rid, "cost_usd:claude-opus-5-5") == pytest.approx(1.23 + 4.0)   # stored + recomputed
+    assert val(conn, rid, "cost_usd:gpt-6-astra") == pytest.approx(0.5)
+    assert val(conn, rid, "cost_usd") == pytest.approx(5.73)
+    # write_bundle folds cache_write into input_tok: 1500 + 2000 + 300 + 1_000_000
+    assert val(conn, rid, "tokens:claude-opus-5-5") == 1_003_800
+    assert val(conn, rid, "tokens:gpt-6-astra") == 15

@@ -10,6 +10,9 @@ Sources: Anthropic first-party API prices (claude-api skill table, cached
 reachable). Rows or fields marked `# estimate` are derived, not published.
 Cache write = 5-minute write = 1.25x input (Anthropic's standard multiplier).
 
+Overrides: config.toml `[prices."<model>"]` (input, cached, cache_write, output) wins over the
+table, matched on the exact model id first, then on the normalized base id.
+
 Matching: lowercase, strip provider prefixes (`anthropic.`, `us.anthropic.`,
 `openai/`), strip `[1m]`-style suffixes and date suffixes (`-20250514`,
 `@20250514`, `-v1:0`), then the longest table key that equals the id or is a
@@ -97,10 +100,34 @@ def _key(base: str) -> str | None:
     return best
 
 
+def _override(model: str | None, base: str, table: Price | None) -> Price | None:
+    """config.toml [prices."<model>"] {input, cached, cache_write, output}: exact id first, then base id."""
+    try:
+        from .config import load
+        ov = load().prices or {}
+    except Exception:
+        return None
+    o = ov.get(model or "") or ov.get(base)
+    if not isinstance(o, dict) or "input" not in o:
+        return None
+    try:
+        i = float(o["input"])
+        out = float(o.get("output", table.output if table else 5 * i))
+        cr = float(o.get("cached", o.get("cache_read", table.cache_read if table else 0.1 * i)))
+        cw = float(o.get("cache_write", table.cache_write if table else 1.25 * i))
+    except (TypeError, ValueError):
+        return None
+    return Price(i, cr, cw, out, table.window if table else None,
+                 table.long_threshold if table else None, table.long_in if table else 1.0,
+                 table.long_out if table else 1.0)
+
+
 def lookup(model: str | None) -> Price | None:
+    """Config override (exact id, then normalized base) > table (longest prefix) > None."""
     base, _ = normalize(model)
     k = _key(base) if base else None
-    return PRICES[k] if k else None
+    table = PRICES[k] if k else None
+    return _override(model, base, table) or table
 
 
 def cost_usd(model, input_tok, cached_tok, cache_write_tok, output_tok):

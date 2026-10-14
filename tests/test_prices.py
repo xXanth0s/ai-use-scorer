@@ -1,5 +1,7 @@
 import pytest
 
+from scorer import config
+
 from scorer.prices import context_window, cost_usd, lookup, normalize
 
 
@@ -47,3 +49,30 @@ def test_cost_math():
 
 def test_gpt_window():
     assert context_window("gpt-6-astra") == 258_400
+
+
+@pytest.fixture(autouse=True)
+def cfg(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCORER_HOME", str(tmp_path))
+    config.load.cache_clear()
+
+    def put(text):
+        (tmp_path / "config.toml").write_text(text)
+        config.load.cache_clear()
+    yield put
+    config.load.cache_clear()
+
+
+def test_config_override_exact_then_base(cfg):
+    cfg('[prices."claude-opus-5-5"]\ninput = 5.0\ncached = 0.5\ncache_write = 6.25\noutput = 25.0\n'
+        '[prices."claude-sonnet-4-5"]\ninput = 1.0\noutput = 2.0\n'
+        '[prices."my-local-model"]\ninput = 1.0\noutput = 1.0\n')
+    assert cost_usd("claude-opus-5-5", 1_000_000, 0, 0, 1_000_000) == pytest.approx(30.0)
+    p = lookup("claude-sonnet-4-5-20250929")           # base-id match; missing keys from table
+    assert (p.input, p.output, p.cache_read) == (1.0, 2.0, 0.30)
+    assert cost_usd("my-local-model", 1_000_000, 0, 0, 0) == pytest.approx(1.0)   # not in table
+    assert cost_usd("claude-opus-5", 1_000_000, 0, 0, 0) == pytest.approx(5.0)    # untouched
+
+
+def test_no_config_uses_table(cfg):
+    assert lookup("claude-opus-5-5").input == 4.0

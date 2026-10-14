@@ -6,9 +6,10 @@ All interval math uses model.parse_ts; every input column may be NULL.
 
 Pure helpers for report / dashboard (all read-only, `day` = local "YYYY-MM-DD" or None = all days):
 
+  day_bounds(day) -> (start: datetime, end: datetime)   # report day = cutoff..cutoff in model.local_tz()
   turn_intervals(conn, day=None) -> list[(session_id, turn_id, start: datetime, end: datetime)]
       start = turn.prompt_at, end = turn.agent_finished_at; turns without both are skipped.
-      With `day`, intervals are clipped to that local day (turns spanning midnight are split).
+      With `day`, intervals are clipped to day_bounds(day) (turns spanning the cutoff are split).
   union_seconds(intervals) -> float               # length of the union of (start, end) pairs
   overlap_seconds(intervals) -> float             # time covered by >= 2 distinct sessions
   active_overlap(conn, day=None) -> (active_s, overlap_s)
@@ -29,7 +30,8 @@ Metric ids written (day scope unless noted; also "all" scope for the headline se
   H (unit "edits" or "edits(partial)"), H_repair, H_own,
   B_min,
   context_p50, context_p90 (percent of window), tokens_in, tokens_cached, tokens_out,
-  cost_usd, unpriced_calls, model_mix:<model>, subagents, compactions, tool_calls, tool_error_share,
+  cost_usd (api_call.cost_usd as stored; recomputed via prices only when NULL), unpriced_calls,
+  model_mix:<model> (calls), tokens:<model> (in+cached+out), cost_usd:<model>, subagents, compactions, tool_calls, tool_error_share,
   orientation_s (session scope + day median),
   tooling:<category>:<initiator>, tooling:<category> (evidence per distinct name), tooling_human_share.
   tooling(conn, day=None) -> list[dict(category, name, initiator, rule, tool_use_id, turn_id, session_id, day)]
@@ -45,7 +47,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 
 from . import classify, prices
-from .model import DEFINITION_VERSION, clip, local_day, parse_ts
+from .model import DEFINITION_VERSION, clip, local_day, local_tz, parse_ts
 
 GAP_BUCKETS = ("lt30s", "30s-2m", "2-5m", "5-15m", "break")
 BREAK_S = 15 * 60
@@ -94,11 +96,19 @@ def days(conn) -> list[str]:
     return sorted({t["day"] for t in _turns(conn) if t["day"]})
 
 
-def _day_bounds(day: str) -> tuple[datetime, datetime]:
+def day_bounds(day: str) -> tuple[datetime, datetime]:
+    """Report day -> [start, end): from day_cutoff to the next day's cutoff in model.local_tz()
+    (consistent with model.local_day)."""
+    from .config import load
+    c = load().day_cutoff
+    tz = local_tz()
     d = datetime.strptime(day, "%Y-%m-%d").date()
-    lo = datetime.combine(d, time.min).astimezone()
-    hi = datetime.combine(d + timedelta(days=1), time.min).astimezone()
+    lo = datetime.combine(d, c).replace(tzinfo=tz)
+    hi = datetime.combine(d + timedelta(days=1), c).replace(tzinfo=tz)
     return lo, hi
+
+
+_day_bounds = day_bounds
 
 
 # --- intervals ---------------------------------------------------------------------------------
@@ -707,11 +717,16 @@ def _emit_scope(w: _W, conn, day: str | None) -> None:
     priced = [r["cost"] for r in api if r["cost"] is not None]
     w.put("cost_usd", st, sid, sum(priced), "usd", len(priced))
     w.put("unpriced_calls", st, sid, len(api) - len(priced), "calls", len(api))
-    mix: dict[str, int] = {}
+    mix: dict[str, list] = {}
     for r in api:
-        mix[r["model"] or "unknown"] = mix.get(r["model"] or "unknown", 0) + 1
-    for m, c in sorted(mix.items()):
-        w.put(f"model_mix:{m}", st, sid, c, "calls", len(api))
+        mix.setdefault(r["model"] or "unknown", []).append(r)
+    for m, rs in sorted(mix.items()):
+        w.put(f"model_mix:{m}", st, sid, len(rs), "calls", len(api))
+        w.put(f"tokens:{m}", st, sid, sum((r["input_tok"] or 0) + (r["cached_tok"] or 0) + (r["output_tok"] or 0)
+                                         for r in rs), "tokens", len(rs))
+        pc = [r["cost"] for r in rs if r["cost"] is not None]
+        if pc:
+            w.put(f"cost_usd:{m}", st, sid, sum(pc), "usd", len(pc))
 
     tids = {t["id"] for t in turns}
     sids = {t["session_id"] for t in turns}
