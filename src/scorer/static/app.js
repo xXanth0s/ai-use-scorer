@@ -37,6 +37,23 @@ function median(xs) {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
 const UNCAL = '<span class="chip-uncal" tabindex="0" title="Judge not yet calibrated (κ on 50 double-labelled turns pending)">uncalibrated</span>';
+/* you / agent split: "you" = Pine (foreground), "agent" = muted grey, "none" = empty track (same as Leverage) */
+function splitBar(segs, caption, label) {
+  const tot = segs.reduce((a, g) => a + (isNum(g.n) ? g.n : 0), 0);
+  const bar = tot ? segs.filter((g) => g.n > 0).map((g) => `<span class="${g.cls}" style="width:${((100 * g.n) / tot).toFixed(1)}%"></span>`).join('') : '';
+  return `<div class="split"><div class="trk" role="img" aria-label="${esc(label || caption.replace(/<[^>]+>/g, ''))}">${bar}</div><div class="cap">${caption}</div></div>`;
+}
+const CAUSE_OWNER = { info_missing: 'you', requirement_changed: 'you', instruction_violated: 'agent', env_failure: 'environment' };
+function ownerOf(cause, turnId, attr) {
+  const c = attr && attr.corrections;
+  if (c && turnId != null) {
+    for (const [k, o] of [['user_preventable', 'you'], ['agent_error', 'agent'], ['environment', 'environment'], ['unclear', 'unclear']]) {
+      if (c[k] && (c[k].turn_ids || []).includes(turnId)) return o;
+    }
+  }
+  return CAUSE_OWNER[String(cause || '').replace(/^cause:/, '')] || 'unclear';
+}
+const ownerChip = (o) => `<span class="owner ${o}" title="${o === 'you' ? 'Preventable by you' : o === 'agent' ? 'The agent got it wrong' : o === 'environment' ? 'Environment or tooling failure' : 'Owner unclear'}">${o === 'you' ? 'you' : o === 'agent' ? 'agent' : o === 'environment' ? 'environment' : 'unclear'}</span>`;
 const ltrunc = (txt, full) => `<span class="ltrunc" title="${esc(full || txt)}"><bdi>${esc(txt)}</bdi></span>`;
 const pretty = (s) => String(s).replace(/^(cause|event|detection):/, '').replace(/[_:]/g, ' ');
 
@@ -210,6 +227,8 @@ async function optional(path) {
   } catch (e) { return null; }
 }
 cache.report = new Map(); cache.narr = new Map(); cache.summary = new Map();
+cache.attr = new Map();
+const getAttr = (d) => { if (!cache.attr.has(d)) cache.attr.set(d, optional(`/api/attribution?day=${d}`)); return cache.attr.get(d); };
 const getReport = (d) => { const k = `${d}|${S.includeTemp ? 1 : 0}`; if (!cache.report.has(k)) cache.report.set(k, optional(`/api/report/${d}${S.includeTemp ? '?include_temp=1' : ''}`)); return cache.report.get(k); };
 const getNarrative = (d) => { if (!cache.narr.has(d)) cache.narr.set(d, optional(`/api/narrative?day=${d}`)); return cache.narr.get(d); };
 
@@ -280,7 +299,8 @@ function unverifiedDeltaHTML(unvShare, unvBase) {
 }
 
 VIEWS_today = async function () {
-  const [d, base, rep] = await Promise.all([getDay(S.day), baselineFor(S.day), getReport(S.day)]);
+  const [d, base, rep, attrRaw] = await Promise.all([getDay(S.day), baselineFor(S.day), getReport(S.day), getAttr(S.day)]);
+  const attr = attrRaw && attrRaw.available ? attrRaw : null;
   const f = rep || factsFallback(d);
   const sid8 = (s) => String(s || '').replace(/^\?/, '').slice(0, 8);
   const V = d.scored.V, B = d.scored.B_min;
@@ -290,23 +310,45 @@ VIEWS_today = async function () {
   const unvBase = isNum(base.V.base) ? 1 - base.V.base : null;
   const cTotal = base.C.today;
   const causes = (d.scored.C || []).filter((x) => /^C:cause:/.test(x.metric));
+  const sp = d.split || {};
+  const va = attr && attr.verification;
+  const vs = va ? { you: va.asked_by_you.count, agent: va.agent_initiative.count, none: va.none.count }
+    : sp.verification ? { you: sp.verification.asked_by_you, agent: sp.verification.agent_initiative, none: sp.verification.none } : null;
+  const vSplit = vs && vs.you + vs.agent + vs.none ? splitBar([{ n: vs.you, cls: 'you' }, { n: vs.agent, cls: 'agent' }, { n: vs.none, cls: 'none' }],
+    `Checks: <b>${vs.you} you asked</b> · ${vs.agent} agent on its own · ${vs.none} nobody`) : '';
+  const bs = sp.blocked;
+  const bSplit = bs && bs.elsewhere_s + bs.quick_reply_s ? splitBar([{ n: bs.elsewhere_s, cls: 'you' }, { n: bs.quick_reply_s, cls: 'agent' }],
+    `<b>${dur(bs.elsewhere_s)} while you were in another session</b> · ${dur(bs.quick_reply_s)} quick replies`) : '';
+  let cs = null;
+  if (attr && attr.corrections) {
+    const c = attr.corrections;
+    cs = { you: c.user_preventable.count, agent: c.agent_error.count, other: c.environment.count + c.unclear.count, src: 'judge' };
+  } else if (causes.length) {
+    cs = { you: 0, agent: 0, other: 0, src: 'cause' };
+    for (const c of causes) { const o = ownerOf(c.metric.slice(8), null, null); cs[o === 'you' ? 'you' : o === 'agent' ? 'agent' : 'other'] += c.value || 0; }
+  }
+  const cSplit = cs && cs.you + cs.agent + cs.other ? splitBar([{ n: cs.you, cls: 'you' }, { n: cs.agent, cls: 'agent' }, { n: cs.other, cls: 'none' }],
+    `<b>${num(cs.you)} preventable by you</b> · ${num(cs.agent)} agent error${cs.agent === 1 ? '' : 's'}${cs.other ? ` · ${num(cs.other)} environment or unclear` : ''}${cs.src === 'cause' ? ' <span class="muted">(by cause)</span>' : ''}`) : '';
+  const ts = sp.time;
+  const tSplit = ts && ts.agent_s + ts.waiting_s ? splitBar([{ n: ts.waiting_s, cls: 'you' }, { n: ts.agent_s, cls: 'agent' }],
+    `<b>${dur(ts.waiting_s)} waiting on you</b> · ${dur(ts.agent_s)} agent working`) : '';
   const band = `<div class="band">
     <div class="stat"><span class="k">Unverified edits</span>
       <span class="v">${unvN != null ? unvN : '—'}${V ? `<small>of ${V.n} batches</small>` : ''}</span>
       <span class="d">${V ? unverifiedDeltaHTML(1 - V.value, unvBase) : 'no edits'}</span>
-      ${V ? evidenceLinks(V.evidence.filter((e) => /^unverified/.test(e.note || '')), 2) : ''}</div>
+      ${V ? evidenceLinks(V.evidence.filter((e) => /^unverified/.test(e.note || '')), 2) : ''}${vSplit}</div>
     <div class="stat"><span class="k">Blocked</span>
       <span class="v">${B ? num(B.value) : '0'}<small>min</small></span>
       <span class="d">${deltaHTML(B ? B.value : 0, base.B_min.base, 'min', true)}</span>
-      ${B ? evidenceLinks(B.evidence, 2) : ''}</div>
+      ${B ? evidenceLinks(B.evidence, 2) : ''}${bSplit}</div>
     <div class="stat"><span class="k">Corrections ${UNCAL}</span>
       <span class="v">${isNum(cTotal) ? `${num(cTotal)}<small>turns</small>` : '—<small>judge pending</small>'}</span>
       <span class="d">${isNum(cTotal) ? deltaHTML(cTotal, base.C.base, '', true) : 'run <span class="code">scorer judge</span>'}</span>
-      ${causes.length ? evidenceLinks(causes.flatMap((c) => c.evidence || []), 2) : ''}</div>
+      ${causes.length ? evidenceLinks(causes.flatMap((c) => c.evidence || []), 2) : ''}${cSplit}</div>
     <div class="stat"><span class="k">Active agent time</span>
       <span class="v">${num(d.computed.active_s / 3600)}<small>h</small></span>
       <span class="d">${isNum(base.active_h.base) ? `median ${num(base.active_h.base)} h` : 'no 7-day median yet'}</span>
-      <span class="d">${dur(d.computed.overlap_s)} with two or more agents at once</span></div>
+      <span class="d">${dur(d.computed.overlap_s)} with two or more agents at once</span>${tSplit}</div>
   </div>`;
 
   // right now
@@ -322,7 +364,7 @@ VIEWS_today = async function () {
 
   // corrections by cause
   const cc = f.corrections || [];
-  const corr = cc.length ? `<ul class="plain">${cc.map((c) => `<li><span class="badge tag">${esc(pretty(c.cause))}</span> ${turnLinks([c.turn_id])}
+  const corr = cc.length ? `<ul class="plain">${cc.map((c) => `<li><span class="badge tag">${esc(pretty(c.cause))}</span> ${ownerChip(ownerOf(c.cause, c.turn_id, attr))} ${turnLinks([c.turn_id])}
       <blockquote class="q">${esc(c.quote)}</blockquote>${c.prevent ? `<div class="sub-note">Prevent it: ${esc(c.prevent)}</div>` : ''}</li>`).join('')}</ul>`
     : '<p class="sub-note">No corrections labelled by the judge. Run <code class="cmd">scorer judge</code>.</p>';
 
@@ -379,7 +421,7 @@ VIEWS_today = async function () {
   <section class="grid2">
     <div class="colstack">
       <div class="panel"><div class="panel-head"><h2>Right now: unverified</h2><span class="note">${un.some((u) => u.command) ? 'run before you push' : 'run the tests before you push'}</span></div>${rightNow}</div>
-      <div class="panel"><div class="panel-head"><h2>Corrections by cause ${UNCAL}</h2><span class="note">${causes.map((c) => `${esc(pretty(c.metric.slice(8)))} ${num(c.value)}`).join(' · ')}</span></div>${corr}</div>
+      <div class="panel"><div class="panel-head"><h2>Corrections by cause ${UNCAL}</h2><span class="note">${causes.map((c) => `${esc(pretty(c.metric.slice(8)))} ${num(c.value)} (${ownerOf(c.metric.slice(8), null, null)})`).join(' · ')}</span></div>${corr}</div>
     </div>
     <div class="colstack">
       <div class="panel"><div class="panel-head"><h2>Worst attention window</h2><span class="note">${B ? `${num(B.value)} min blocked today` : ''}</span></div>${worst}</div>
@@ -394,6 +436,11 @@ VIEWS_today = async function () {
     ${diag}
   </section>
 
+  <section class="panel" id="strengths" aria-labelledby="strengths-h">
+    <div class="panel-head"><h2 id="strengths-h">What you did well</h2><span class="note">your choices worth repeating</span></div>
+    <div id="strengths-body"><span class="shimmer" style="font-size:13px">Loading</span></div>
+  </section>
+
   <section class="panel" id="actions" aria-labelledby="actions-h">
     <div class="panel-head"><h2 id="actions-h">Action items</h2><span class="note">what to change, with the turns behind it</span></div>
     <div id="actions-body"><span class="shimmer" style="font-size:13px">Loading action items</span></div>
@@ -403,30 +450,37 @@ VIEWS_today = async function () {
 /* ---- action items (judge.action_items via /api/actions) ---- */
 cache.actions = new Map();
 const getActions = (d) => { if (!cache.actions.has(d)) cache.actions.set(d, optional(`/api/actions?day=${d}`)); return cache.actions.get(d); };
-let actionItems = [];
-function actionsHTML(r) {
+let actionItems = [], strengthItems = [];
+cache.strengths = new Map();
+const getStrengths = (d) => { if (!cache.strengths.has(d)) cache.strengths.set(d, optional(`/api/strengths?day=${d}`)); return cache.strengths.get(d); };
+function actionsHTML(r, kind = 'a') {
   const items = (r && r.items) || [];
+  const good = kind === 's';
   if (!items.length) {
-    return `<p class="sub-note">${r && r.available === false ? 'Action items appear here once the judge provides them (<code class="cmd">scorer judge</code>).' : r && r.error ? 'Could not compute action items for this day.' : 'No action items for this day.'}</p>`;
+    const what = good ? 'Strengths' : 'Action items';
+    return `<p class="sub-note">${r && r.available === false ? `${what} appear here once the judge provides them (<code class="cmd">scorer judge</code>).` : r && r.error ? `Could not compute ${what.toLowerCase()} for this day.` : good ? 'Nothing flagged as a strength for this day yet.' : 'No action items for this day.'}</p>`;
   }
-  return `<ol class="actions">${items.map((a, i) => `<li>
+  return `<ol class="actions${good ? ' good' : ''}">${items.map((a, i) => `<li>
       <span class="an" aria-hidden="true">${i + 1}</span>
       <div class="ab">
         <div class="at">${esc(a.text)}</div>
-        <div class="am">${a.category ? `<span class="badge tag">${esc(pretty(a.category))}</span>` : ''}${a.count ? `<span class="muted">${num(a.count)}×</span>` : ''}${a.uncalibrated || a.source === 'judge' ? UNCAL : ''}${turnLinks(a.turn_ids)}
-          <button type="button" class="linkbtn" data-askwhy="${i}">${icon('spark')}Ask why</button></div>
+        <div class="am">${a.category ? `<span class="badge ${good ? 'grass' : 'tag'}">${esc(pretty(a.category))}</span>` : ''}${a.count ? `<span class="muted">${num(a.count)}×</span>` : ''}${a.uncalibrated || a.source === 'judge' ? UNCAL : ''}${turnLinks(a.turn_ids)}
+          <button type="button" class="linkbtn" data-askwhy="${kind}:${i}">${icon('spark')}${good ? 'Ask how to repeat it' : 'Ask why'}</button></div>
         ${a.example_quote ? `<blockquote class="q">${esc(a.example_quote)}</blockquote>` : ''}
-        ${a.claude_md_line ? `<div class="mdline"><span class="lbl">CLAUDE.md</span><code class="cmd">${esc(a.claude_md_line)}</code><button type="button" class="btn outline sm" data-copyline="${i}" aria-label="Copy the CLAUDE.md line">Copy</button></div>` : ''}
+        ${a.claude_md_line ? `<div class="mdline"><span class="lbl">CLAUDE.md</span><code class="cmd">${esc(a.claude_md_line)}</code><button type="button" class="btn outline sm" data-copyline="${kind}:${i}" aria-label="Copy the CLAUDE.md line">Copy</button></div>` : ''}
       </div></li>`).join('')}</ol>`;
 }
 async function fillActions() {
   const day = S.day;
-  const r = await getActions(day);
-  const box = $('#actions-body');
-  if (!box || S.day !== day || S.tab !== 'today') return;
+  const [r, g] = await Promise.all([getActions(day), getStrengths(day)]);
+  if (S.day !== day || S.tab !== 'today') return;
+  const box = $('#actions-body'), gb = $('#strengths-body');
   actionItems = (r && r.items) || [];
-  box.innerHTML = actionsHTML(r);
+  strengthItems = (g && g.items) || [];
+  if (gb) gb.innerHTML = actionsHTML(g, 's');
+  if (box) box.innerHTML = actionsHTML(r, 'a');
 }
+const listItem = (key) => { const [k, i] = String(key).split(':'); return (k === 's' ? strengthItems : actionItems)[+i]; };
 
 function narrativeFallbackHTML(f, loading) {
   return `<h1>${esc((f.verdict && f.verdict.text) || 'No agent activity recorded.')}</h1>
@@ -811,6 +865,22 @@ VIEWS_sessions = async function () {
   <div id="sel-session"></div>`;
 };
 
+function sessionSplitHTML(s) {
+  const v = (s.split && s.split.verification) || null;
+  const t = (s.split && s.split.tooling) || null;
+  const parts = [];
+  if (v && v.asked_by_you + v.agent_initiative + v.none) parts.push(splitBar([{ n: v.asked_by_you, cls: 'you' }, { n: v.agent_initiative, cls: 'agent' }, { n: v.none, cls: 'none' }], `Checks: <b>${v.asked_by_you} you asked</b> · ${v.agent_initiative} agent on its own · ${v.none} nobody`));
+  if (t && t.you + t.agent + t.default) parts.push(splitBar([{ n: t.you, cls: 'you' }, { n: t.agent + t.default, cls: 'agent' }], `Skills, commands, MCP: <b>${t.you} by you</b> · ${t.agent + t.default} by the agent${t.default ? ` (${t.default} by hooks)` : ''}`));
+  const a = S.attr && S.attr.corrections;
+  if (a) {
+    const ids = new Set(s.turns.map((x) => x.id));
+    const n = (k) => (a[k] ? (a[k].turn_ids || []).filter((x) => ids.has(x)).length : 0);
+    const y = n('user_preventable'), g = n('agent_error'), o = n('environment') + n('unclear');
+    if (y + g + o) parts.push(splitBar([{ n: y, cls: 'you' }, { n: g, cls: 'agent' }, { n: o, cls: 'none' }], `Corrections: <b>${y} preventable by you</b> · ${g} agent error${g === 1 ? '' : 's'}${o ? ` · ${o} other` : ''}`));
+  }
+  return parts.length ? `<div class="split-grid">${parts.join('')}</div>` : '<div class="s">No checks, tooling or judged corrections in this session.</div>';
+}
+
 function sessionFactsHTML(s, d) {
   const v = s.verification || {};
   const t = s.tokens || {};
@@ -823,6 +893,7 @@ function sessionFactsHTML(s, d) {
     <div><div class="k">Verification</div><div class="v">${v.batches ? `${(v.verified_pass || 0) + (v.verified_fail || 0)}/${v.batches}` : '—'}</div><div class="s">${v.batches ? `${v.verified_pass} passed · ${v.verified_fail} failed · ${v.inspected} inspected · ${v.none} none` : 'no edit batches'}</div></div>
     <div><div class="k">Interruptions</div><div class="v">${(s.interrupts || []).length}</div><div class="s">${bl ? `${dur(bl)} blocked on you` : 'never blocked on you'}</div></div>
     <div><div class="k">Corrections</div><div class="v">${num(s.corrections || 0)}</div><div class="s">turns the judge labelled</div></div>
+    <div class="wide"><div class="k">You / agent</div>${sessionSplitHTML(s)}</div>
     <div class="wide"><div class="k">Models</div>${models ? `<ul class="mix">${models}</ul>` : '<div class="s">no API calls recorded</div>'}</div>
   </div>`;
 }
@@ -836,6 +907,7 @@ async function selectSession(id) {
   const s = d.sessions.find((x) => x.id === id);
   if (!s) { box.innerHTML = ''; return; }
   const ts = await pool(s.turns.map((t) => t.id), 6, (tid) => getTurn(tid).catch(() => null));
+  const at = await getAttr(S.day); S.attr = at && at.available ? at : null;
   const gapAfter = {};
   for (const g of d.gaps || []) if (g.session_id === id) {
     const prev = s.turns.filter((t) => (t.end || t.start) <= g.start).pop();
@@ -1076,9 +1148,9 @@ document.addEventListener('click', (e) => {
   const sr = e.target.closest('tr[data-session]'); if (sr) { selectSession(sr.dataset.session); return; }
   const as = e.target.closest('[data-ask-session]'); if (as) { const id = as.dataset.askSession; getDay(S.day).then((d) => { const s = d.sessions.find((x) => x.id === id); setAsk(true); input.value = `Summarize session ${s ? s.short : id} in ${s ? s.repo : 'this repo'}: what got done, and where did I lose time?`; autoGrow(); syncComposer(); setTimeout(() => input.focus(), 330); }); return; }
   const aw = e.target.closest('[data-askwhy]');
-  if (aw) { const a = actionItems[+aw.dataset.askwhy]; if (a) { setAsk(true); const ids = (a.turn_ids || []).slice(0, 5).map((t) => `#${t}`).join(', '); input.value = `Why this action item: "${a.text}"? Walk me through the evidence${ids ? ` (turns ${ids})` : ''} and what to change.`; autoGrow(); syncComposer(); setTimeout(() => input.focus(), 330); } return; }
+  if (aw) { const good = aw.dataset.askwhy.startsWith('s:'); const a = listItem(aw.dataset.askwhy); if (a) { setAsk(true); const ids = (a.turn_ids || []).slice(0, 5).map((t) => `#${t}`).join(', '); input.value = good ? `What exactly did I do well here: "${a.text}"? Show me the turns${ids ? ` (${ids})` : ''} and how to make it a habit.` : `Why this action item: "${a.text}"? Walk me through the evidence${ids ? ` (turns ${ids})` : ''} and what to change.`; autoGrow(); syncComposer(); setTimeout(() => input.focus(), 330); } return; }
   const cl = e.target.closest('[data-copyline]');
-  if (cl) { const a = actionItems[+cl.dataset.copyline]; if (a && a.claude_md_line) { const done = (ok) => { cl.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(() => { cl.textContent = 'Copy'; }, 1500); }; try { navigator.clipboard.writeText(a.claude_md_line).then(() => done(true), () => done(false)); } catch (err) { done(false); } } return; }
+  if (cl) { const a = listItem(cl.dataset.copyline); if (a && a.claude_md_line) { const done = (ok) => { cl.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(() => { cl.textContent = 'Copy'; }, 1500); }; try { navigator.clipboard.writeText(a.claude_md_line).then(() => done(true), () => done(false)); } catch (err) { done(false); } } return; }
   const tg = e.target.closest('[data-toggle-temp]');
   if (tg) { S.includeTemp = !S.includeTemp; try { localStorage.setItem('scorer-include-temp', S.includeTemp ? '1' : '0'); } catch (err) { /* ignore */ } S.selSession = null; render(); return; }
   const rg = e.target.closest('[data-range]'); if (rg) { S.trendRange = +rg.dataset.range; render(); return; }
@@ -1194,7 +1266,7 @@ function stepsHTML(m, live) {
   if (!done.length) return '';
   const n = steps.filter((s) => s.done).length;
   const li = (s, nested) => `<li class="${nested ? 'nested' : ''}"><span class="ico${s.ok === false ? ' fail' : ''}">${icon(s.ok === false ? 'alert' : 'check')}</span>
-      <span class="lab">${esc(s.doneLabel)}<small><span class="tn">${s.agent ? 'subagent · ' : ''}${esc(s.agent ? (steps.filter((c) => c.parent === s.id).map((c) => c.name).join(' · ') || s.name) : s.name)}</span>${s.summary ? ` · ${esc(s.summary)}` : ''}</small></span></li>`;
+      <span class="lab">${esc(s.doneLabel)}<small><span class="tn">${s.agent ? 'subagent · ' : ''}${esc(s.agent ? (steps.filter((c) => c.parent === s.id).map((c) => c.name).join(' · ') || s.name) : s.name)}</span>${s.summary ? ` · ${esc(s.summary)}` : ''}</small>${s.sql ? `<details class="sqlq"><summary>show query</summary><pre><code>${esc(s.sql)}</code></pre></details>` : ''}</span></li>`;
   const items = done.map((s) => li(s, false) + steps.filter((c) => c.parent === s.id && c.done).map((c) => li(c, true)).join('')).join('');
   return `<div><button type="button" class="steps-toggle" aria-expanded="${m.open ? 'true' : 'false'}" data-steps="${m.id}">
       <span>${n} step${n === 1 ? '' : 's'} completed</span>${icon('chev')}</button>
@@ -1295,7 +1367,7 @@ function onEvent(m, ev) {
     case 'tool-start': {
       const [a, d] = stepLabels(ev.name, ev.input);
       const sub = ev.parent_id || ev.subagent_id ? m.steps.find((s) => s.id === (ev.parent_id || ev.subagent_id)) : openSub();
-      m.steps.push({ id: ev.id || `t${m.steps.length}`, name: ev.name, active: a, doneLabel: d, done: false, parent: sub ? sub.id : null });
+      m.steps.push({ id: ev.id || `t${m.steps.length}`, name: ev.name, active: a, doneLabel: d, done: false, parent: sub ? sub.id : null, sql: ev.sql_full || null });
       break;
     }
     case 'tool-result': {

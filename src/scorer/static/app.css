@@ -615,3 +615,24 @@ ol.actions .mdline code.cmd { min-width: 0; max-width: 100%; overflow-wrap: anyw
 .linkbtn { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; padding: 0; font: inherit; font-size: 13px; color: var(--brand-grass); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .linkbtn .icon { width: 14px; height: 14px; }
 .linkbtn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
+
+/* ---------- you / agent split bars (you = Pine, agent = muted grey; same as Leverage) ---------- */
+.split { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; min-width: 0; }
+.split .trk { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--muted); }
+.split .trk span { display: block; height: 100%; }
+.split .trk .you { background: var(--foreground); }
+.split .trk .agent { background: color-mix(in srgb, var(--foreground) 28%, transparent); }
+.split .trk .none { background: transparent; }
+.split .cap { font-size: 12px; line-height: 1.4; color: var(--muted-foreground); }
+.split .cap b { font-weight: 600; color: var(--foreground); }
+.split-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 24px; }
+.owner { display: inline-flex; align-items: center; font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); cursor: help; vertical-align: middle; }
+.owner.you { background: var(--foreground); color: var(--background); border-color: var(--foreground); }
+.owner.agent { background: color-mix(in srgb, var(--foreground) 12%, transparent); color: var(--foreground); }
+.owner.environment, .owner.unclear { color: var(--muted-foreground); border-style: dashed; }
+.badge.grass { background: var(--success-muted); color: var(--success); border-color: var(--success-border); }
+ol.actions.good .an { background: var(--success-muted); color: var(--success); }
+/* chat steps: model-written SQL behind a toggle */
+details.sqlq { margin-top: 4px; }
+details.sqlq summary { font-size: 12px; color: var(--muted-foreground); cursor: pointer; width: max-content; }
+details.sqlq pre { margin: 6px 0 0; padding: 8px 10px; background: var(--muted); border-radius: calc(var(--radius) - 2px); font-family: var(--font-code); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }

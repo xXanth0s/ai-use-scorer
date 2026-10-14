@@ -40,6 +40,10 @@ JSON endpoints (all GET, ``Cache-Control: no-store``)
                     "interrupted", "clipped_start", "clipped_end", "end_source"}],
          "interrupts": [{"at", "turn_id"}]}],
      "hours": [{"start", "active_s", "waiting_s"}],      # local hours; waiting = non-break gaps - active
+     "split": {"verification": {"asked_by_you", "agent_initiative", "none"},   # edit batches by who ran the check
+               "blocked": {"elsewhere_s", "quick_reply_s"},   # metrics.blocked: other session active | attended pause
+               "time": {"agent_s", "waiting_s"}},             # agent working vs waiting on you (gaps < 15 min)
+     sessions[].split: {"verification": {...as above}, "tooling": {"you", "agent", "default"}},
      "overlap": [{"start", "end"}],                     # >=2 sessions active
      "gaps": [{"session_id", "start", "end", "seconds", "bucket", "switched"}],
      "computed": {"active_s", "overlap_s", "turns", "sessions", "interrupts"},
@@ -90,8 +94,15 @@ JSON endpoints (all GET, ``Cache-Control: no-store``)
     {"day", "available": bool, "items": [{"text" (<=160), "category", "count", "turn_ids", "example_quote" (<=80),
      "claude_md_line" (<=160)|null, "uncalibrated", "source": "judge"|"metrics"}], "error"?}
     from judge.action_items(conn, day); available=false (empty items) until that function exists.
+/api/strengths?day=YYYY-MM-DD
+    same shape as /api/actions, from judge.strengths(conn, day): what the human did well.
+/api/attribution?day=YYYY-MM-DD
+    {"day", "available", "corrections": {"user_preventable"|"agent_error"|"environment"|"unclear": {"count", "turn_ids"}}|null,
+     "verification": {"asked_by_you"|"agent_initiative"|"none": {"count", "turn_ids"}}|null,
+     "tooling": {"you", "agent", "default"}|null}      from judge.attribution(conn, day); numbers/ids only.
 GET /api/chat/status
-    {"available": bool, "model": str|null, "backend": "python"|"mastra", "reason": str|null}
+    {"available": bool, "model": str|null, "backend": "python"|"mastra", "reason": str|null, "fallback"?}
+    mastra: model/fallback from the sidecar's /health; python: agent.MODEL.
 GET /api/agent/system-prompt
     {"system_prompt": str, "today": "YYYY-MM-DD", "max_steps": int}   # agent._SYSTEM, for agent-mastra/
 POST /api/tools/<query_db|get_turn|get_metric|list_sessions>   body {"input": {...}, "n0"?: int, "day"?}
@@ -101,7 +112,8 @@ POST /api/chat   body {"messages": [{"role": "user"|"assistant", "content": str}
     Server-Sent Events (text/event-stream), one `data: <json>\n\n` per event from
     scorer.agent.stream_chat(conn, messages, day):
       {"type": "text-delta", "delta"}
-      {"type": "tool-start", "id", "name", "input", "subagent_id"?}   # string inputs clipped to 80
+      {"type": "tool-start", "id", "name", "input", "subagent_id"?, "agent"?,   # string inputs clipped to 80
+       "sql_full"?}                                                  # query_db only: model-written SQL, <= 500
       {"type": "tool-result", "id", "name", "ok", "summary",       # summary/labels clipped to 80
        "citations": [{"n", "turn_id", "session_id", "label"}]}
       {"type": "subagent-start", "id", "name", "task", "parent_id"?}  # mastra backend only
@@ -640,6 +652,15 @@ def day_payload(conn, day, include_temp: bool = False) -> dict:
                 if tsess.get(tid):
                     c_turns[tsess[tid]] += 1
     _session_extras(conn, day, sessions, by_s, api, batches, runs, c_turns)
+    split = day_split(conn, day, batches, hidden, gaps, allv)
+    tl = [x for x in mx.tooling(conn, day) if x["session_id"] not in hidden]
+    for sid, sess in sessions.items():
+        sb = [b for b in batches if b.session_id == sid]
+        st = [x for x in tl if x["session_id"] == sid]
+        sess["split"] = {"verification": _verify_split(sb),
+                         "tooling": {"you": sum(x["initiator"] == "human" for x in st),
+                                     "agent": sum(x["initiator"] == "agent" for x in st),
+                                     "default": sum(x["initiator"] not in ("human", "agent") for x in st)}}
     order = sorted(sessions.values(), key=lambda s: s["turns"][0]["start"])
     leverage = leverage_block(conn, rows, day, runs)
     dvals = {d["metric"]: d["value"] for d in diagnostics}
@@ -648,7 +669,7 @@ def day_payload(conn, day, include_temp: bool = False) -> dict:
             dvals.pop(k, None)
     return {"day": day, "run_id": run_id, "start": iso(start), "end": iso(end),
             "include_temp": include_temp, "temp_hidden": len(temp_ids) if not include_temp else 0,
-            "sessions": order, "hours": hours_block(allv, gaps, start, end),
+            "sessions": order, "hours": hours_block(allv, gaps, start, end), "split": split,
             "overlap": [{"start": iso(s), "end": iso(e)} for s, e in ov], "gaps": gaps, "computed": computed,
             "scored": scored, "diagnostics": diagnostics, "leverage": leverage,
             "verdict": (facts_verdict(conn, day) if computed["turns"] else None) or verdict(computed, scored, dvals)}
@@ -668,6 +689,24 @@ def facts_verdict(conn, day) -> dict | None:
     return {"where": clip(v["text"], 400), "change": clip(tm["change"], 400), "basis": v["metric"],
             "text": clip(v["text"], 400), "category": v.get("category"), "minutes": v.get("minutes"),
             "evidence_turns": list(tm.get("evidence_turns") or [])[:50]}
+
+
+def _verify_split(batches) -> dict:
+    """Who ran the check after each edit batch: you asked (verifier initiator human), agent on its own, nobody."""
+    ver = [b for b in batches if b.tier in ("verified_pass", "verified_fail")]
+    you = [b for b in ver if b.verifier_initiator == "human"]
+    return {"asked_by_you": len(you), "agent_initiative": len(ver) - len(you), "none": len(batches) - len(ver)}
+
+
+def day_split(conn, day, batches, hidden, gaps, allv) -> dict:
+    """Deterministic you/agent splits for the Today band (the judge's /api/attribution refines corrections)."""
+    bl = [b for b in mx.blocked(conn, day) if b["session_id"] not in hidden]
+    wait = _subtract(_merge([(parse_ts(g["start"]), parse_ts(g["end"])) for g in gaps if g["seconds"] < BREAK_S]),
+                     _merge(allv))
+    return {"verification": _verify_split(batches),
+            "blocked": {"elsewhere_s": round(sum(b["blocked_s"] for b in bl if not b["attended"])),
+                        "quick_reply_s": round(sum(b["blocked_s"] for b in bl if b["attended"]))},
+            "time": {"agent_s": round(union_len(allv)), "waiting_s": round(sum((e - s).total_seconds() for s, e in wait))}}
 
 
 def _drop_hidden(conn, day, scored, tsess, hidden, batches) -> None:
@@ -1120,21 +1159,78 @@ def sanitize_action(it) -> dict | None:
     return out
 
 
-def actions_payload(conn, day: str) -> dict:
-    """judge.action_items(conn, day), sanitized. Empty state while the function does not exist yet."""
+def _judge_fn(name: str):
     try:
         from . import judge
-        fn = getattr(judge, "action_items", None)
+        return getattr(judge, name, None)
     except Exception:
-        fn = None
+        return None
+
+
+def _judge_list(conn, day: str, name: str) -> dict:
+    fn = _judge_fn(name)
     if fn is None:
         return {"day": day, "available": False, "items": []}
     try:
         raw = fn(conn, day) or []
     except Exception as e:
-        return {"day": day, "available": True, "items": [], "error": f"action items failed: {type(e).__name__}"}
+        return {"day": day, "available": True, "items": [], "error": f"{name} failed: {type(e).__name__}"}
     items = [x for x in (sanitize_action(it) for it in list(raw)[:20]) if x]
     return {"day": day, "available": True, "items": items}
+
+
+def actions_payload(conn, day: str) -> dict:
+    """judge.action_items(conn, day), sanitized. Empty state while the function does not exist yet."""
+    return _judge_list(conn, day, "action_items")
+
+
+def strengths_payload(conn, day: str) -> dict:
+    """judge.strengths(conn, day): what the human did well; same item shape as action items."""
+    return _judge_list(conn, day, "strengths")
+
+
+ATTRIBUTION = {"corrections": ("user_preventable", "agent_error", "environment", "unclear"),
+               "verification": ("asked_by_you", "agent_initiative", "none")}
+TOOLING_SPLIT = ("you", "agent", "default")
+
+
+def _num(v) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return 0
+    return int(x) if x.is_integer() else x
+
+
+def _bucket_ids(b) -> dict:
+    b = b if isinstance(b, dict) else {}
+    ids = []
+    for t in b.get("turn_ids") or []:
+        try:
+            ids.append(int(t))
+        except (TypeError, ValueError):
+            continue
+    return {"count": _num(b.get("count", len(ids))), "turn_ids": ids[:100]}
+
+
+def attribution_payload(conn, day: str) -> dict:
+    """judge.attribution(conn, day), sanitized to fixed keys (numbers + turn ids only, no text)."""
+    fn = _judge_fn("attribution")
+    empty = {"day": day, "available": False, "corrections": None, "verification": None, "tooling": None}
+    if fn is None:
+        return empty
+    try:
+        raw = fn(conn, day) or {}
+    except Exception as e:
+        return {**empty, "available": True, "error": f"attribution failed: {type(e).__name__}"}
+    raw = raw if isinstance(raw, dict) else {}
+    out = {"day": day, "available": True}
+    for sec, keys in ATTRIBUTION.items():
+        d = raw.get(sec)
+        out[sec] = {k: _bucket_ids(d.get(k)) for k in keys} if isinstance(d, dict) else None
+    t = raw.get("tooling")
+    out["tooling"] = {k: _num(t.get(k)) for k in TOOLING_SPLIT} if isinstance(t, dict) else None
+    return out
 
 
 # --- chat -------------------------------------------------------------------
@@ -1151,31 +1247,61 @@ MASTRA_HEALTH_TIMEOUT_S = 0.3
 TOOL_NAMES = ("query_db", "get_turn", "get_metric", "list_sessions")
 
 
-def mastra_url() -> str | None:
-    """The optional Mastra sidecar (agent-mastra/), if SCORER_MASTRA_URL is set and /health answers
-    within 300 ms. Anything else -> None and the Python agent serves the chat (the default)."""
+def mastra_health() -> tuple[str | None, dict]:
+    """The optional Mastra sidecar (agent-mastra/): (url, /health JSON) if SCORER_MASTRA_URL is set and
+    /health answers 200 within 300 ms, else (None, {}) and the Python agent serves the chat (the default).
+    /health may report {"model", "fallback"}: the models the sidecar actually uses."""
     url = (os.environ.get(MASTRA_ENV) or "").strip().rstrip("/")
     if not url.startswith(("http://", "https://")):
-        return None
+        return None, {}
     try:
         with urllib.request.urlopen(url + "/health", timeout=MASTRA_HEALTH_TIMEOUT_S) as r:
-            return url if r.status == 200 else None
+            if r.status != 200:
+                return None, {}
+            try:
+                info = json.loads(r.read(4096) or b"{}")
+            except ValueError:
+                info = {}
+            return url, info if isinstance(info, dict) else {}
     except Exception:
-        return None
+        return None, {}
+
+
+def mastra_url() -> str | None:
+    return mastra_health()[0]
 
 
 def chat_status() -> dict:
     agent = _load_agent()
-    backend = "mastra" if mastra_url() else "python"
+    url, info = mastra_health()
+    backend = "mastra" if url else "python"
+    if url:   # the sidecar has its own key and model; report what it says it runs
+        model = clip(str(info.get("model")), 60) if info.get("model") else None
+        out = {"available": True, "model": model, "backend": backend, "reason": None}
+        if info.get("fallback"):
+            out["fallback"] = clip(str(info.get("fallback")), 60)
+        return out
     if agent is None:
-        return {"available": backend == "mastra", "model": None, "backend": backend,
-                "reason": None if backend == "mastra" else "agent module not installed"}
+        return {"available": False, "model": None, "backend": backend, "reason": "agent module not installed"}
     try:
         ok = bool(agent.has_key())
     except Exception:
         ok = False
     return {"available": ok, "model": getattr(agent, "MODEL", None), "backend": backend,
             "reason": None if ok else "no ANTHROPIC_API_KEY"}
+
+
+SQL_FULL_MAX = 500
+_SQL_LIT = re.compile(r"'(?:[^']|'')*'")
+
+
+def sql_display(sql: str) -> str:
+    """Model-written SQL for display, <= 500 chars. The model may copy prompt text into it (LIKE '%…%'),
+    so every quoted literal and every whitespace-free token is clipped to 80 chars."""
+    s = _SQL_LIT.sub(lambda m: "'" + clip(m.group(0)[1:-1], CLIP - 2) + "'" if len(m.group(0)) > CLIP else m.group(0),
+                     sql.strip())
+    s = re.sub(r"\S{%d,}" % (CLIP + 1), lambda m: m.group(0)[:CLIP - 1] + "…", s)
+    return s[:SQL_FULL_MAX]
 
 
 def _clip_tree(o, depth=0):
@@ -1217,6 +1343,11 @@ def sanitize_event(ev) -> dict:
         sid = _first(ev, "subagent_id", "subagentId", "parent_id", "parentId")
         if sid is not None:
             out["subagent_id"] = clip(str(sid), 64)
+        if ev.get("agent"):
+            out["agent"] = clip(str(ev.get("agent")), 40)
+        inp = ev.get("input")
+        if out["name"] == "query_db" and isinstance(inp, dict) and isinstance(inp.get("sql"), str):
+            out["sql_full"] = sql_display(inp["sql"])   # the model's own SQL; literals/tokens clipped to 80
         return out
     if t == "tool-result":
         return {"type": t, "id": clip(str(ev.get("id")), 64), "name": clip(ev.get("name"), 40),
@@ -1488,6 +1619,12 @@ class Handler(BaseHTTPRequestHandler):
                 if agent is None or not hasattr(agent, "narrative"):
                     return self._json(501, {"error": "not_implemented"})
                 return self._json(200, narrative_payload(conn, day, agent))
+            if path in ("/api/strengths", "/api/attribution"):
+                day = self._day_arg(_q1(qs, "day"))
+                if not day:
+                    return self._json(400, {"error": "day must be YYYY-MM-DD"})
+                fn = strengths_payload if path == "/api/strengths" else attribution_payload
+                return self._json(200, fn(conn, day))
             if path == "/api/actions":
                 day = self._day_arg(_q1(qs, "day"))
                 if not day:

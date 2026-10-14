@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -432,7 +433,7 @@ class _Upstream:
 
             def do_GET(self):  # noqa: N802
                 time.sleep(health_delay)
-                body = b'{"ok": true}'
+                body = b'{"ok": true, "model": "claude-sonnet-5-5", "fallback": "claude-opus-5-5"}'
                 self.send_response(200 if self.path == "/health" else 404)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -446,11 +447,16 @@ class _Upstream:
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
                 evs = [{"type": "subagent-start", "id": "d1", "name": "turnInvestigator", "task": LONG_PROMPT},
-                       {"type": "tool-start", "id": "t1", "name": "get_turn", "input": {"turn_id": 2}},
+                       {"type": "tool-start", "id": "t1", "name": "get_turn", "input": {"turn_id": 2},
+                        "agent": "turnInvestigator"},
+                       {"type": "tool-start", "id": "t2", "name": "query_db",
+                        "input": {"sql": "SELECT count(*) FROM turn WHERE " + " OR ".join(["idx = 1"] * 60)}},
                        {"type": "tool-result", "id": "t1", "name": "get_turn", "ok": True, "summary": "turn 2",
                         "citations": [{"n": 1, "turn_id": 2, "session_id": "a", "label": LONG_PROMPT}]},
                        {"type": "subagent-result", "id": "d1", "name": "turnInvestigator", "summary": LONG_PROMPT},
                        {"type": "text-delta", "delta": "answer [1]"},
+                       {"type": "suggestions", "items": [{"label": "Compare with yesterday",
+                                                           "prompt": "Compare today's V with yesterday's."}]},
                        {"type": "done", "model": "claude-opus-5-5", "backend": "mastra"}]
                 for ev in evs:
                     self.wfile.write(b"data: " + json.dumps(ev).encode() + b"\n\n")
@@ -482,11 +488,18 @@ def test_chat_proxy_on(server, monkeypatch):
         monkeypatch.setenv("SCORER_MASTRA_URL", up.url)
         assert json.loads(get(base, "/api/chat/status")[1])["backend"] == "mastra"
         evs = chat(base)
-        assert [e["type"] for e in evs] == ["subagent-start", "tool-start", "tool-result", "subagent-result",
-                                           "text-delta", "done"]
+        assert [e["type"] for e in evs] == ["subagent-start", "tool-start", "tool-start", "tool-result",
+                                           "subagent-result", "text-delta", "suggestions", "done"]
+        assert evs[1]["agent"] == "turnInvestigator" and evs[1]["subagent_id"] == "d1"
+        q = evs[2]
+        assert len(q["input"]["sql"]) == 80 and len(q["sql_full"]) == 500 and q["sql_full"].startswith("SELECT count(*)")
+        assert evs[6] == {"type": "suggestions", "items": [{"label": "Compare with yesterday",
+                                                           "prompt": "Compare today's V with yesterday's."}]}
+        st = json.loads(get(base, "/api/chat/status")[1])
+        assert st["model"] == "claude-sonnet-5-5" and st["fallback"] == "claude-opus-5-5" and st["available"] is True
         assert evs[-1] == {"type": "done", "model": "claude-opus-5-5", "backend": "mastra"}
-        assert len(evs[0]["task"]) <= 80 and len(evs[3]["summary"]) <= 80
-        assert len(evs[2]["citations"][0]["label"]) <= 80
+        assert len(evs[0]["task"]) <= 80 and len(evs[4]["summary"]) <= 80
+        assert len(evs[3]["citations"][0]["label"]) <= 80
         assert up.seen["body"] == {"messages": [{"role": "user", "content": "why is V low?"}], "day": DAY}
         assert up.seen["scorer_url"] == base
     finally:
@@ -839,3 +852,64 @@ def test_actions(server, monkeypatch):
     code, raw, _ = get(base, f"/api/actions?day={DAY}")
     assert code == 200 and SENTINEL.encode() not in raw and json.loads(raw)["items"] == []
     assert get(base, "/api/actions?day=bogus")[0] == 400
+
+
+def test_sql_display_clips_literals():
+    sql = "SELECT id FROM turn WHERE prompt_text LIKE '%" + LONG_PROMPT + "%' AND x = 'it''s' AND " + "y" * 120
+    out = serve.sql_display(sql)
+    assert SENTINEL not in out and "'it''s'" in out and len(out) <= 500
+    lits = re.findall(r"'(?:[^']|'')*'", out)
+    assert all(len(x) <= 80 for x in lits) and max(len(t) for t in out.split()) <= 80
+    ev = serve.sanitize_event({"type": "tool-start", "id": "q", "name": "query_db", "input": {"sql": sql}})
+    assert SENTINEL not in json.dumps(ev) and ev["sql_full"] == out
+    assert "sql_full" not in serve.sanitize_event({"type": "tool-start", "id": "g", "name": "get_turn",
+                                                    "input": {"sql": "SELECT 1"}})
+
+
+# --- you / agent attribution ---------------------------------------------------------------------------
+
+def test_strengths_and_attribution(server, monkeypatch):
+    from scorer import judge
+    base, info = server
+    for name in ("strengths", "attribution"):
+        monkeypatch.delattr(judge, name, raising=False)
+    assert json.loads(get(base, f"/api/strengths?day={DAY}")[1]) == {"day": DAY, "available": False, "items": []}
+    assert json.loads(get(base, f"/api/attribution?day={DAY}")[1]) == {
+        "day": DAY, "available": False, "corrections": None, "verification": None, "tooling": None}
+    t0, t1 = info["turn_ids"][0], info["turn_ids"][1]
+    monkeypatch.setattr(judge, "strengths", lambda conn, day: [
+        {"text": "You asked for the test run right after the parser edit", "category": "verification", "count": 1,
+         "turn_ids": [t0], "example_quote": LONG_PROMPT, "uncalibrated": True, "source": "judge"}], raising=False)
+    monkeypatch.setattr(judge, "attribution", lambda conn, day: {
+        "corrections": {"user_preventable": {"count": 2, "turn_ids": [t1, "x"]}, "agent_error": {"count": 1, "turn_ids": [t0]},
+                        "environment": {"count": 0, "turn_ids": []}, "secret": LONG_PROMPT},
+        "verification": {"asked_by_you": {"count": 1, "turn_ids": [t0]}, "agent_initiative": {"count": 0},
+                         "none": {"count": 1, "turn_ids": [t1]}},
+        "tooling": {"you": 3, "agent": "4", "default": None, "x": LONG_PROMPT}}, raising=False)
+    code, raw, _ = get(base, f"/api/strengths?day={DAY}&x=1")
+    assert code == 200 and SENTINEL.encode() not in raw
+    it = json.loads(raw)["items"][0]
+    assert it["uncalibrated"] and it["turn_ids"] == [t0] and len(it["example_quote"]) == 80
+    code, raw, _ = get(base, f"/api/attribution?day={DAY}")
+    assert code == 200 and SENTINEL.encode() not in raw
+    a = json.loads(raw)
+    assert a["corrections"]["user_preventable"] == {"count": 2, "turn_ids": [t1]}
+    assert a["corrections"]["unclear"] == {"count": 0, "turn_ids": []} and "secret" not in a["corrections"]
+    assert a["verification"]["agent_initiative"] == {"count": 0, "turn_ids": []}
+    assert a["tooling"] == {"you": 3, "agent": 4, "default": 0}
+    monkeypatch.setattr(judge, "attribution", lambda conn, day: 1 / 0, raising=False)
+    a = json.loads(get(base, f"/api/attribution?day={DAY}")[1])
+    assert a["available"] is True and a["corrections"] is None and "ZeroDivisionError" in a["error"]
+    assert get(base, "/api/strengths?day=nope")[0] == 400
+
+
+def test_day_split(server):
+    base, _ = server
+    d = json.loads(get(base, f"/api/day/{DAY}")[1])
+    sp = d["split"]
+    assert sp["verification"] == {"asked_by_you": 1, "agent_initiative": 0, "none": 1}   # the pytest call was human
+    assert sp["time"]["agent_s"] == d["computed"]["active_s"] and sp["time"]["waiting_s"] == 60
+    assert set(sp["blocked"]) == {"elsewhere_s", "quick_reply_s"}
+    a = d["sessions"][0]["split"]
+    assert a["verification"] == {"asked_by_you": 1, "agent_initiative": 0, "none": 1}
+    assert a["tooling"] == {"you": 3, "agent": 4, "default": 0}
