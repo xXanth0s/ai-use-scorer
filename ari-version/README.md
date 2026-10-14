@@ -8,19 +8,21 @@ A hosted Next.js dashboard for evidence-backed reports on how someone works with
 
 `Codex / Claude plugin → local transcript snapshots + SQLite → bounded authenticated sync → Eve + Neon → hosted Next.js dashboard`
 
-The web app runs on Vercel with `HDYAI_HOSTED=1`. It never reads the visitor's local filesystem or uses SQLite as hosted storage. Its APIs require Clerk sign-in and a separately authorized platform connection. The platform credential is encrypted in an HttpOnly cookie bound to the current Clerk user; switching accounts does not inherit another user's reports.
+The web app runs on Vercel with `HDYAI_HOSTED=1`. It never reads the visitor's local filesystem or uses SQLite as hosted storage. Its APIs require Clerk sign-in and an automatically provisioned, restricted platform account. The platform credential is encrypted in an HttpOnly cookie bound to the current Clerk user; switching accounts does not inherit another user's reports.
 
 The analysis service is a separate Vercel project in `services/analysis`. Its Neon database is provisioned and linked via Vercel Marketplace. The web app talks to its authenticated APIs rather than receiving the database or Gateway credentials. Clerk is also provisioned via Vercel Marketplace on its free plan. No paid auth features are required. Model calls use the configured AI Gateway account and can consume credits; free infrastructure does not make model inference free.
 
 ## User setup
 
-1. Open a platform invitation and sign in using Clerk.
-2. Select **Connect Codex** or **Connect Claude Code**, then paste the generated setup message into that agent.
-3. Let the agent register/install the plugin and complete its native hook review. The setup message pairs a private, revocable device credential with the user's existing platform account.
+1. **Sign up** or sign in using Clerk. The setup page automatically creates a private, restricted platform account; no invitation is needed.
+2. **Choose an agent:** select **Connect Codex** or **Connect Claude Code**.
+3. **Copy the setup message** and paste it into a new chat with that agent.
+4. **Approve installation** and the native hook review inside the agent. The message pairs a private, revocable device credential with the signed-in account.
+5. **Connected:** the dashboard confirms receipt of the plugin's first sync. It checks every 15 seconds while the setup page is open.
 
 Users do not enter API keys, workspace paths, or Git settings. This MVP uses a guided setup message; it is not yet a published universal one-click marketplace install. Codex still requires native plugin installation and hook trust review. Plugin runtime currently supports macOS/Linux with Node.js 24+. The agent can help install that runtime from its official distribution.
 
-Invitations expire in 15 minutes and can be used once. Platform credentials expire after 30 days. Accounts are invitation gated to prevent arbitrary signups from consuming model quota. Browser and plugin credentials are independent; signing out does not stop the plugin. Ask the agent to run the plugin's disconnect action to pause capture and revoke its credential.
+New self-service accounts are restricted to **2 reports per day**, **3 plugin connections**, and **1 analysis at a time**, within the platform's shared daily budget. Signing up and generating a setup message do not call a model. Private plugin pairing codes expire in 15 minutes and can be used once; they are handled by the agent rather than entered by the user. Platform credentials expire after 30 days. Browser and plugin credentials are independent; signing out does not stop the plugin. Ask the agent to run the plugin's disconnect action to pause capture and revoke its credential.
 
 ## Capture and daily reports
 
@@ -47,7 +49,7 @@ npm run analysis:migrate
 
 `npm run build` packages the plugin into `public/plugins/how-do-you-ai.zip` and publishes its SHA-256 in `release.json`. The archive contains dual native manifests, a connect skill, local marketplace catalogs, and a bundled worker. It contains no credentials or user data.
 
-The additive schema is `services/analysis/schema.sql`. Admission is atomic: by default 6 analyses/account/day, 40 across the platform/day, one fresh active job/account, and up to 3 active credentials/account. The hosted service validates output and exact evidence hashes before accepting a completed report. Retain database backups and use a Neon branch for future destructive migrations.
+The additive schema is `services/analysis/schema.sql`. Admission is atomic: self-service accounts receive 2 analyses/account/day, within the shared platform budget of 40/day, with one fresh active job/account and up to 3 plugin connections. Existing invited accounts retain their configured limits. The hosted service validates output and exact evidence hashes before accepting a completed report. Retain database backups and use a Neon branch for future destructive migrations.
 
 Owner administration uses private `services/analysis/.env.local` (never distribute it):
 
@@ -56,7 +58,7 @@ npm run platform:admin -- invite https://how-do-you-ai-analysis.vercel.app ari h
 npm run platform:admin -- revoke https://how-do-you-ai-analysis.vercel.app ari
 ```
 
-Invitations are written to owner-only files in `.local`, never printed. Share only with the approved recipient. No automatic emails are sent.
+Legacy administrative invitations are written to owner-only files in `.local`, never printed. They remain available for managed accounts, but new users do not need one. No automatic invitation emails are sent.
 
 ## Local standalone development
 
@@ -70,3 +72,9 @@ Without `HDYAI_HOSTED=1`, the app binds to loopback, uses private local SQLite, 
 ## Verification
 
 Tests cover transcript attribution, token usage/final-output semantics, date scoping, concurrency, citation validation, tenant-scoped sync, encrypted user-bound auth credentials, CSRF, native snapshot recovery, and the actual extracted plugin package using synthetic localhost data. Native marketplace installation/trust still needs verification inside each agent. Tests do not require paid model calls.
+
+### Automatic-account server configuration
+
+Set the same random `WEB_PROVISIONING_KEY` (at least 32 characters) as a server-only Secret on the dashboard and analysis projects. Never expose it through `NEXT_PUBLIC_*`. The dashboard signs the verified Clerk user/session identity; the analysis service validates the signature and timestamp before atomic account provisioning. New accounts receive 2 analyses per UTC day, 3 collector connections, and up to 5 browser sessions. The 40-analysis platform cap remains enforced. Provisioning reuses credentials for the same Clerk session and does not reset usage or reactivate revoked accounts.
+
+Deploy order: run the additive Neon migration, deploy the analysis service, then deploy the dashboard. Existing connected managed accounts retain their data and configured limits.

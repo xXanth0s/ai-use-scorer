@@ -8,12 +8,16 @@ export function sql(){if(!process.env.DATABASE_URL)throw new HttpError(503,'Anal
 export class HttpError extends Error {constructor(public status:number,message:string){super(message);}}
 export const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 export const secret=()=>randomBytes(32).toString('base64url');
-export async function body(request:Request,max=250000){
+export async function rawBody(request:Request,max=250000){
  if(!request.headers.get('content-type')?.startsWith('application/json'))throw new HttpError(415,'Use JSON.');
  const reader=request.body?.getReader();if(!reader)throw new HttpError(400,'Missing request body.');
  const chunks:Uint8Array[]=[];let size=0;
  try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>max){await reader.cancel();throw new HttpError(413,'The evidence sample is too large.');}chunks.push(value);}}finally{reader.releaseLock();}
- try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw new HttpError(400,'Invalid JSON.');}
+ return Buffer.concat(chunks).toString('utf8');
+}
+export async function body(request:Request,max=250000){
+ const text=await rawBody(request,max);
+ try{return JSON.parse(text);}catch{throw new HttpError(400,'Invalid JSON.');}
 }
 export function admin(request:Request){
  const configured=process.env.PLATFORM_ADMIN_KEY;if(!configured||configured.length<32)throw new HttpError(503,'Administration is unavailable.');
@@ -37,6 +41,8 @@ export function failure(error:unknown){
  if(/USER_QUOTA|PLATFORM_QUOTA/.test(message))return response({error:'The daily analysis limit has been reached. Try again tomorrow.'},429);
  if(message.includes('ALREADY_RUNNING'))return response({error:'An analysis is already running for this account.'},429);
  if(message.includes('IDEMPOTENCY_CONFLICT'))return response({error:'This request ID already belongs to different evidence.'},409);
+ if(message.includes('BROWSER_LIMIT'))return response({error:'This account has five active browser sessions. Ask the platform owner to revoke an old session, or wait for it to expire.'},403);
+ if(message.includes('BROWSER_ACCESS_DISABLED'))return response({error:'This account or browser session has expired or been revoked.'},403);
  if(/INVALID_INVITE|ACCESS_DISABLED|DEVICE_LIMIT/.test(message))return response({error:'Activation was not accepted. Ask for a new invitation or revoke an old device.'},403);
  // Never send upstream errors: they can contain query parameters or secrets.
  return response({error:'Analysis service is temporarily unavailable.'},503);

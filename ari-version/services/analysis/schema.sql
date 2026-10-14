@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS device_credentials (
  hash text PRIMARY KEY, user_id text NOT NULL REFERENCES platform_users(id),
  expires_at timestamptz NOT NULL, revoked boolean NOT NULL DEFAULT false
 );
+ALTER TABLE device_credentials ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'collector' CHECK (kind IN ('collector','browser'));
 CREATE TABLE IF NOT EXISTS activation_invites (
  hash text PRIMARY KEY, user_id text NOT NULL REFERENCES platform_users(id),
  expires_at timestamptz NOT NULL, redeemed boolean NOT NULL DEFAULT false
@@ -49,12 +50,33 @@ BEGIN
  END IF;
  SELECT * INTO user_record FROM platform_users WHERE id=invite.user_id FOR UPDATE;
  IF NOT user_record.active THEN RAISE EXCEPTION 'ACCESS_DISABLED'; END IF;
- IF (SELECT count(*) FROM device_credentials WHERE user_id=invite.user_id AND NOT revoked AND expires_at>now())>=3 THEN
+ IF (SELECT count(*) FROM device_credentials WHERE user_id=invite.user_id AND kind='collector' AND NOT revoked AND expires_at>now())>=3 THEN
   RAISE EXCEPTION 'DEVICE_LIMIT';
  END IF;
  UPDATE activation_invites SET redeemed=true WHERE hash=invite_hash;
- INSERT INTO device_credentials VALUES(device_hash,invite.user_id,now()+interval '30 days',false);
+ INSERT INTO device_credentials(hash,user_id,expires_at,revoked,kind) VALUES(device_hash,invite.user_id,now()+interval '30 days',false,'collector');
  RETURN invite.user_id;
+END $$;
+
+-- A Clerk session receives one deterministic browser credential. This function
+-- serializes account admission without changing existing limits or usage rows.
+CREATE OR REPLACE FUNCTION provision_web_account(owner_id text, credential_hash text)
+RETURNS TABLE(provisioned_user_id text, provisioned_daily_limit integer, credential_expires_at timestamptz)
+LANGUAGE plpgsql AS $$
+DECLARE account platform_users; credential device_credentials;
+BEGIN
+ IF owner_id !~ '^clerk:user_[A-Za-z0-9]{1,100}$' OR credential_hash !~ '^[a-f0-9]{64}$' THEN RAISE EXCEPTION 'BROWSER_ACCESS_DISABLED'; END IF;
+ INSERT INTO platform_users(id,daily_limit) VALUES(owner_id,2) ON CONFLICT(id) DO NOTHING;
+ SELECT * INTO account FROM platform_users WHERE id=owner_id FOR UPDATE;
+ IF NOT account.active THEN RAISE EXCEPTION 'BROWSER_ACCESS_DISABLED'; END IF;
+ SELECT * INTO credential FROM device_credentials WHERE hash=credential_hash;
+ IF FOUND THEN
+  IF credential.user_id<>owner_id OR credential.kind<>'browser' OR credential.revoked OR credential.expires_at<=now() THEN RAISE EXCEPTION 'BROWSER_ACCESS_DISABLED'; END IF;
+ ELSE
+  IF (SELECT count(*) FROM device_credentials WHERE user_id=owner_id AND kind='browser' AND NOT revoked AND expires_at>now())>=5 THEN RAISE EXCEPTION 'BROWSER_LIMIT'; END IF;
+  INSERT INTO device_credentials(hash,user_id,expires_at,kind) VALUES(credential_hash,owner_id,now()+interval '30 days','browser') RETURNING * INTO credential;
+ END IF;
+ RETURN QUERY SELECT account.id,account.daily_limit,credential.expires_at;
 END $$;
 
 -- Row locks make quota admission atomic across serverless instances/devices.
