@@ -3,7 +3,9 @@
   "framework": "nextjs",
   "env": {
     "HDYAI_HOSTED": "1",
-    "HDYAI_ANALYSIS_URL": "https://how-do-you-ai-analysis.vercel.app"
+    "HDYAI_ANALYSIS_URL": "https://hdyai-scorer-analysis.vercel.app",
+    "HDYAI_WEB_URL": "https://hdyai-scorer-live.vercel.app",
+    "REPORT_TIMEZONE": "Europe/Berlin"
   },
   "buildCommand": "npm run build"
 }
