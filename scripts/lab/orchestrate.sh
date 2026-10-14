@@ -5,11 +5,17 @@
 #   scripts/lab/orchestrate.sh launch     # 4 herdr workspaces, start claude x3 + codex x1
 #   scripts/lab/orchestrate.sh drive      # scripted prompts: correction, clarification, interrupt,
 #                                         #   queued prompt, hand edit, asked/not-asked to test
-#   scripts/lab/orchestrate.sh measure    # ingest --cwd-prefix, check, report -> ~/.scorer-lab/reports/lab.md
+#   scripts/lab/orchestrate.sh measure    # ingest --cwd-prefix, check, report -> ~/.scorer-lab/reports/lab.md, compare
+#   scripts/lab/orchestrate.sh compare    # ground truth (lab-actions.log) vs measured (scorer.db) per project
 #   scripts/lab/orchestrate.sh teardown   # stop lab agents, close lab workspaces (dirs are kept)
 #   scripts/lab/orchestrate.sh all        # setup launch drive teardown measure
 #   scripts/lab/orchestrate.sh reset      # delete ~/scorer-lab and ~/.scorer-lab (asks first)
 #
+# Project sets (scripts/lab/sets/<set>.sh): LAB_SET=v1 (default: todo, csv+worktree, codex kata) or
+#   LAB_SET=v2 (md link checker, rate limiter, json-schema diff, retry util w/ flaky tests; claude only,
+#   adds positive episodes: good spec, verification catch, early redirect, scoped turns, trivial hand edit).
+#   setup records the set in $LAB_ROOT/.lab-set, so later phases pick it up from LAB_ROOT alone.
+#   e.g. LAB_ROOT=$HOME/scorer-lab/run4 LAB_SET=v2 scripts/lab/orchestrate.sh all
 # Re-run in a fresh root (keeps earlier runs):  LAB_ROOT=$HOME/scorer-lab/run3 scripts/lab/orchestrate.sh all
 # (the reported lab used LAB_ROOT=$HOME/scorer-lab/run2; measure filters --cwd-prefix "$LAB_ROOT").
 # Isolation: SCORER_HOME=~/.scorer-lab, hooks only in <proj>/.claude/settings.local.json. Nothing global.
@@ -24,6 +30,9 @@ STATE="$SCORER_HOME/lab-state.env"
 ACTLOG="$SCORER_HOME/lab-actions.log"
 SC=(uv run --quiet --project "$REPO" scorer)
 mkdir -p "$SCORER_HOME/reports"
+SET="${LAB_SET:-$(cat "$LAB/.lab-set" 2>/dev/null || echo v1)}"
+SETFILE="$REPO/scripts/lab/sets/$SET.sh"
+[ -f "$SETFILE" ] || { echo "[lab] ERROR: unknown LAB_SET=$SET ($SETFILE)" >&2; exit 1; }
 
 log() { local l; l="$(date -u +%FT%TZ) $*"; echo "$l" >> "$ACTLOG"; echo "[lab] $l"; }
 die() { echo "[lab] ERROR: $*" >&2; exit 1; }
@@ -69,30 +78,22 @@ EOF
   claude_settings "$d"
 }
 
-cmd_setup() {
-  [ -e "$LAB" ] && die "$LAB exists; run '$0 reset' first or set LAB_ROOT"
-  mkdir -p "$LAB"
-  # 1) todo CLI (claude) + a project slash command -> human-initiated tooling event
-  py_project "$LAB/lab-todo-cli" lab-todo-cli
-  mkdir -p "$LAB/lab-todo-cli/.claude/commands"
+runtests_cmd() {  # project slash command /runtests -> human-initiated tooling event
+  mkdir -p "$1/.claude/commands"
   printf -- '---\ndescription: run the test suite\n---\nRun `python3 -m pytest -q` in the project root and report pass/fail counts in one line.\n' \
-    > "$LAB/lab-todo-cli/.claude/commands/runtests.md"
-  commit_all "$LAB/lab-todo-cli" "init"
-  # 2) csv stats (claude) + 3) its git worktree on branch feat/hist (claude, parallel)
-  py_project "$LAB/lab-csv-stats" lab-csv-stats
-  printf 'name,score\nann,3\nbob,5\ncid,8\ndee,\n' > "$LAB/lab-csv-stats/sample.csv"
-  commit_all "$LAB/lab-csv-stats" "init"
-  git -C "$LAB/lab-csv-stats" worktree add -q "$LAB/lab-csv-hist" -b feat/hist
-  # 4) node kata (codex; measured from rollouts only, no hooks)
-  local k="$LAB/lab-codex-kata"; mkdir -p "$k"; git -C "$k" init -q -b main
-  printf '{\n  "name": "lab-codex-kata",\n  "version": "0.1.0",\n  "type": "commonjs",\n  "scripts": {"test": "node --test"}\n}\n' > "$k/package.json"
-  printf '# lab-codex-kata\n' > "$k/README.md"; printf 'node_modules/\n' > "$k/.gitignore"
-  commit_all "$k" "init"
-  # project-local claude hooks (settings.local.json is untracked -> install into the worktree too)
-  for p in lab-todo-cli lab-csv-stats lab-csv-hist; do
+    > "$1/.claude/commands/runtests.md"
+}
+install_hooks() {  # project-local claude hooks only (<proj>/.claude/settings.local.json)
+  local p; for p in "$@"; do
     "${SC[@]}" install --project "$LAB/$p" --agent claude --yes >/dev/null || die "install failed for $p"
   done
-  log "setup projects=lab-todo-cli,lab-csv-stats,lab-csv-hist(worktree feat/hist),lab-codex-kata"
+}
+
+cmd_setup() {
+  [ -e "$LAB" ] && die "$LAB exists; run '$0 reset' first or set LAB_ROOT"
+  mkdir -p "$LAB"; echo "$SET" > "$LAB/.lab-set"
+  log "run-begin root=$LAB set=$SET model=$MODEL"
+  set_setup
 }
 
 # ---------------------------------------------------------------- launch
@@ -131,12 +132,8 @@ start_agent() {  # <workspace label> <dir> <agent name> <shell command>
 claude_cmd() { echo "env -u SUPERSET_HOME_DIR claude --model $MODEL"; }
 
 cmd_launch() {
-  need_herdr; : > "$STATE"; log "launch-begin"
-  start_agent lab-todo-cli  "$LAB/lab-todo-cli"  lab-todo  "$(claude_cmd)"
-  start_agent lab-csv-stats "$LAB/lab-csv-stats" lab-csv   "$(claude_cmd)"
-  start_agent lab-csv-hist  "$LAB/lab-csv-hist"  lab-hist  "$(claude_cmd)"
-  start_agent lab-codex-kata "$LAB/lab-codex-kata" lab-codex \
-    "env -u SUPERSET_HOME_DIR codex -C $LAB/lab-codex-kata -s workspace-write -a never -c model_reasoning_effort=\"low\" --no-alt-screen"
+  need_herdr; : > "$STATE"; log "launch-begin set=$SET"
+  set_launch
 }
 
 # ---------------------------------------------------------------- drive
@@ -170,61 +167,39 @@ working_after_prompt() {  # <agent> <max_s>  wait until the agent reports workin
 }
 NOQ="Do not ask clarifying questions; make reasonable choices and proceed."
 
-cmd_drive() {
-  need_herdr; load; log "drive-begin"
-  # t0: all four in parallel (csv + hist are the parallel worktree pair -> overlap)
-  P lab-csv  task "Write csvstats.py: a CLI that reads a CSV file and prints count, mean, median and stdev of one numeric column given by name (try it on sample.csv mentally). Just write the code; do not run tests or any commands. $NOQ"
-  P lab-hist task "Add histogram.py: function histogram(values, bins=5) returning bin counts, and render(values) that prints ASCII bars; add a CLI reading a numeric column from a CSV. Also write tests in tests/test_histogram.py with 4-5 cases. $NOQ"
-  P lab-todo task "Create todo.py: a tiny todo CLI with commands add, list, done that stores tasks in todo.json. Parse sys.argv by hand (no libraries). Keep it short. $NOQ"
-  P lab-codex task "Create roman.js exporting toRoman(n) for 1..3999, with node:test tests in roman.test.js. Run npm test at the end."
-  # queued prompt: typed while lab-hist is still working
-  working_after_prompt lab-hist 20; sleep 15
-  if [ "$(aget lab-hist | cut -d' ' -f1)" = working ]; then P lab-hist queued "When you are done, also add a --width option that scales the bars."; else log "skip queued (lab-hist not working)"; fi
-
-  # todo: hand edit between turns (outside the agent), then a correction
-  W lab-todo
-  echo "Hand-edited by the lab orchestrator." >> "$LAB/lab-todo-cli/README.md"
-  log "hand-edit lab-todo README.md (append 1 line, outside agent)"
-  P lab-todo correction "No, use argparse instead of parsing sys.argv by hand. Keep the same commands."
-
-  # csv: clarification, then a long task interrupted with Escape, then a re-scoped follow-up
-  W lab-csv
-  P lab-csv clarification "To clarify: skip empty cells, and for an even number of values the median is the mean of the two middle values. Don't run anything."
-  W lab-csv
-  P lab-csv long-task "Add a --group-by COLUMN option that prints the stats per group, a --format json|table option, and thorough docstrings and type hints throughout csvstats.py. Don't run anything."
+interrupt_when_output() {  # <agent> <literal>  Esc once assistant output (literal) is visible
   # Esc only after assistant output started: an Esc before any output makes Claude restore the prompt
   # into the input box with no interrupt marker (reproduces a parser gap: phantom 0-s turn, no interrupt).
-  working_after_prompt lab-csv 20
-  herdr pane wait-output "$(herdr agent get lab-csv | jq -r .result.agent.pane_id)" --match "⏺ Update" \
+  working_after_prompt "$1" 20
+  herdr pane wait-output "$(herdr agent get "$1" | jq -r .result.agent.pane_id)" --match "$2" \
     --source visible --timeout 30000 >/dev/null 2>&1; sleep 2
-  if [ "$(aget lab-csv | cut -d' ' -f1)" = working ]; then herdr agent send-keys lab-csv esc >/dev/null; log "interrupt lab-csv (esc while working)"; else log "skip interrupt (lab-csv not working)"; fi
-  sleep 4; W lab-csv 60
-  P lab-csv after-interrupt "Never mind that. Only add a --format json option. Don't run anything."
+  if [ "$(aget "$1" | cut -d' ' -f1)" = working ]; then herdr agent send-keys "$1" esc >/dev/null; log "interrupt $1 (esc while working)"; else log "skip interrupt ($1 not working)"; fi
+  sleep 4; W "$1" 60
+}
 
-  # codex follow-up
-  W lab-codex
-  P lab-codex followup "Also add fromRoman(s) with tests, and run npm test again."
-
-  # todo: asked to test, then the project slash command (human tooling event)
-  W lab-todo
-  P lab-todo asked-to-test "Add tests for add, list and done in tests/test_todo.py (use a temp dir for todo.json) and run pytest to verify they pass."
-  W lab-todo
-  P lab-todo slash-command "/runtests"
-
-  for a in lab-hist lab-csv lab-codex lab-todo; do W "$a"; done
+cmd_drive() {
+  need_herdr; load; log "drive-begin set=$SET"
+  set_drive
   log "drive-done"; echo "PHASE DONE drive"
 }
 
 # ---------------------------------------------------------------- teardown / measure
+agent_names() { local e; for e in "${AGENT_DIRS[@]}"; do echo "${e%%:*}"; done; }
+
 cmd_teardown() {
   need_herdr; load
-  for a in lab-todo lab-csv lab-hist; do
-    herdr agent send-keys "$a" esc >/dev/null 2>&1; sleep 0.5
-    herdr agent prompt "$a" "/exit" >/dev/null 2>&1 && log "stop $a (/exit)"
+  local a v
+  for a in $(agent_names); do
+    if [[ "$a" == *codex* ]]; then
+      herdr agent send-keys "$a" ctrl+c >/dev/null 2>&1; sleep 1; herdr agent send-keys "$a" ctrl+c >/dev/null 2>&1 && log "stop $a (ctrl+c x2)"
+    else
+      herdr agent send-keys "$a" esc >/dev/null 2>&1; sleep 0.5
+      herdr agent prompt "$a" "/exit" >/dev/null 2>&1 && log "stop $a (/exit)"
+    fi
   done
-  herdr agent send-keys lab-codex ctrl+c >/dev/null 2>&1; sleep 1; herdr agent send-keys lab-codex ctrl+c >/dev/null 2>&1 && log "stop lab-codex (ctrl+c x2)"
   sleep 4
-  for v in WS_lab_todo WS_lab_csv WS_lab_hist WS_lab_codex; do
+  for a in $(agent_names); do
+    v="WS_${a//-/_}"
     [ -n "${!v:-}" ] && herdr workspace close "${!v}" >/dev/null 2>&1 && log "close workspace ${!v}"
   done
   echo "PHASE DONE teardown"
@@ -233,19 +208,42 @@ cmd_teardown() {
 cmd_measure() {
   "${SC[@]}" ingest --since 1d --cwd-prefix "$LAB" && "${SC[@]}" check
   "${SC[@]}" report --day today > "$SCORER_HOME/reports/lab.md" && log "report -> $SCORER_HOME/reports/lab.md"
+  cmd_compare
   echo "PHASE DONE measure"
+}
+
+cmd_compare() {  # ground truth from lab-actions.log (this run only) vs scorer.db, per project dir
+  local DB="$SCORER_HOME/scorer.db" e a dir exp_p exp_i exp_q exp_h ses turns intr gt
+  gt="$(awk -v r="run-begin root=$LAB " 'index($0, r) {buf=""} {buf = buf $0 "\n"} END {printf "%s", buf}' "$ACTLOG")"
+  grep -q "run-begin root=$LAB " <<<"$gt" || { echo "[lab] no run-begin for $LAB in $ACTLOG"; return 1; }
+  printf '\n%-16s %-26s %8s %8s | %8s %8s %8s %8s\n' agent project exp_turn got_turn exp_intr got_intr queued handedit
+  for e in "${AGENT_DIRS[@]}"; do
+    a="${e%%:*}"; dir="$LAB/${e#*:}"
+    exp_p=$(grep -c " prompt $a " <<<"$gt"); exp_i=$(grep -c " interrupt $a " <<<"$gt")
+    exp_q=$(grep -c " prompt $a queued" <<<"$gt"); exp_h=$(grep -cE " hand-edit(-trivial)? $a " <<<"$gt")
+    ses=$(sqlite3 "$DB" "select count(*) from session where cwd='$dir'")
+    turns=$(sqlite3 "$DB" "select count(*) from turn t join session s on s.id=t.session_id where s.cwd='$dir'")
+    intr=$(sqlite3 "$DB" "select count(*) from turn t join session s on s.id=t.session_id where s.cwd='$dir' and t.end_source='interrupt'")
+    printf '%-16s %-26s %8s %8s | %8s %8s %8s %8s   sessions=%s\n' "$a" "${e#*:}" "$exp_p" "$turns" "$exp_i" "$intr" "$exp_q" "$exp_h" "$ses"
+  done
+  echo "(exp_turn = prompts sent incl. queued; a queued prompt may legitimately merge into the running turn)"
+  echo "measured per-turn detail (cwd prefix $LAB):"
+  sqlite3 -separator ' | ' "$DB" "select replace(s.cwd,'$LAB/',''), t.idx, t.prompt_kind, t.initiator, coalesce(t.end_source,'-'), substr(replace(t.prompt_text,char(10),' '),1,60)
+    from turn t join session s on s.id=t.session_id where s.cwd like '$LAB/%' order by s.cwd, t.idx"
 }
 
 cmd_reset() {
   read -r -p "delete $LAB and $SCORER_HOME? [y/N] " a; [ "$a" = y ] || exit 1
-  [ -d "$LAB" ] && for p in "$LAB"/lab-todo-cli "$LAB"/lab-csv-stats "$LAB"/lab-csv-hist; do
-    [ -d "$p" ] && "${SC[@]}" uninstall --project "$p" --yes >/dev/null 2>&1; done
+  local e p; [ -d "$LAB" ] && for e in "${AGENT_DIRS[@]}"; do
+    p="$LAB/${e#*:}"; [ -d "$p/.claude" ] && "${SC[@]}" uninstall --project "$p" --yes >/dev/null 2>&1; done
   rm -rf "$LAB" "$SCORER_HOME"
 }
 
+. "$SETFILE"
+
 case "${1:-}" in
   setup) cmd_setup ;; launch) cmd_launch ;; drive) cmd_drive ;; teardown) cmd_teardown ;;
-  measure) cmd_measure ;; reset) cmd_reset ;;
+  measure) cmd_measure ;; compare) cmd_compare ;; reset) cmd_reset ;;
   all) cmd_setup && cmd_launch && cmd_drive; cmd_teardown; cmd_measure ;;
-  *) sed -n '2,14p' "$0"; exit 2 ;;
+  *) sed -n '2,20p' "$0"; exit 2 ;;
 esac
