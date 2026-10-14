@@ -42,7 +42,12 @@ def _realistic(src: str, sample: dict, dst: Path) -> Path:
         except ValueError:
             data = None
         if isinstance(data, dict) and install.dumps(data) == text:
-            shutil.copyfile(real, dst)
+            # The real file may already carry scorer hooks (live install); strip them so
+            # the fixture is a pre-install config.
+            for ev, groups in list((data.get("hooks") or {}).items()):
+                data["hooks"][ev] = [g for g in groups
+                                     if not any("-m scorer event" in h.get("command", "") for h in g.get("hooks", []))]
+            dst.write_text(install.dumps(data), encoding="utf-8")
             return dst
     dst.write_text(install.dumps(sample), encoding="utf-8")
     return dst

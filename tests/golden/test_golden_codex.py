@@ -42,4 +42,4 @@ def test_golden3_turn_and_tool():
     assert tc.tool_use_id == "exec-g3-1" and tc.kind == "bash" and tc.args_summary == "uv run pytest -q"
     assert tc.is_error and tc.has_result and tc.duration_ms == 1500
     assert tc.bash_intent == "test"
-    assert (tc.initiator, tc.initiator_rule) == ("human", "3:prompt:run")
+    assert (tc.initiator, tc.initiator_rule) == ("human", "3:prompt:run the tests")

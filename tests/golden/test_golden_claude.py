@@ -81,7 +81,9 @@ def test_g9_tooling_events_and_initiators():
     assert ("skill", "mattpocock-skills:tdd", "agent", "claude:Skill") in ev
     assert ("mcp", "linear-server", "agent", "claude:mcp") in ev
     assert ("skill", "review-loop", "agent", "claude:attributionSkill") in ev
-    assert ("command", "clear", "human", "claude:command-name") in ev
+    # built-in CLI commands are session plumbing, not tooling
+    assert not any(x[1] == "clear" for x in ev)
+    assert [e.data["name"] for e in b.events if e.kind == "command_builtin"] == ["clear"]
     # attributionSkill for a skill already invoked via the Skill tool in the same turn is deduped
     assert sum(1 for x in ev if x[1] == "mattpocock-skills:tdd" and x[0] == "skill") == 1
     # the trailing /clear has no agent work but still is a turn
