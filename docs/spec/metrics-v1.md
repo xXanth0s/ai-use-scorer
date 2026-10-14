@@ -24,6 +24,7 @@ Principle: score the human's choices, not the agent. Every event carries `initia
 - Context occupancy: % of model window per request, p50/p90
 - Orientation cost per session: tokens/time from SessionStart to first file change; files re-read that another session read today
 - Subagents (count, depth, model mix), parallel wall time, model mix, queued prompts, kept-change yield, compactions, repo switches, tokens, $ (usage × price table)
+- **Tooling use**: skills / slash commands / MCC tools / plugins per day, split by initiator. Claude: `<command-name>/x` in user entry = human; `Skill` tool_use + `attributionSkill` = agent; hook-triggered = default. Codex: `/skill` or `$skill` in user message = human; skill items in rollout = agent (verify on 2026/10 files). Self: what you reach for vs what the agent reaches for. Candidate: discovered and used the sandbox tooling (skills, CLAUDE.md, plan mode).
 
 ### Dropped
 

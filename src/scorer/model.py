@@ -75,8 +75,14 @@ TOOL_KINDS = ("edit", "bash", "read", "search", "subagent", "web", "other")
 BASH_INTENTS = ("test", "build", "edit", "git", "run", "search", "read", "other")
 EVENT_KINDS = (
     "interrupt", "compaction", "queue_enqueue", "queue_dequeue", "permission_wait",
-    "subagent", "hook", "git_snapshot", "error",
+    "subagent", "hook", "git_snapshot", "error", "tooling",
 )
+# Event(kind="tooling", data={"category": TOOLING_CATEGORIES, "name": str, "initiator": INITIATORS,
+#                             "rule": str, "tool_use_id": str | None})
+# category: skill | command (slash command) | mcp (data.name = server) | plugin (data.name = plugin)
+# initiator: Claude <command-name>/x in user entry -> human; Skill tool_use / attributionSkill -> agent;
+#            hook-triggered -> default. Codex: /skill or $skill in user message -> human; skill items -> agent.
+TOOLING_CATEGORIES = ("skill", "command", "mcp", "plugin")
 
 
 @dataclass
