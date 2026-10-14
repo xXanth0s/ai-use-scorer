@@ -322,3 +322,33 @@ def test_stored_cost_and_per_model(conn):
     # write_bundle folds cache_write into input_tok: 1500 + 2000 + 300 + 1_000_000
     assert val(conn, rid, "tokens:claude-opus-5-5") == 1_003_800
     assert val(conn, rid, "tokens:gpt-6-astra") == 15
+
+
+# --- agent-driven lanes (Codex subagent threads, initiator=agent) ----------------------------------
+
+def test_subagent_threads_excluded_from_human_lanes(conn):
+    parent = Bundle(Session("p", "codex", cwd="/a"),
+                    turns=[turn(0, 0, 600), turn(1, 700, 760, text="now please add the missing tests too")],
+                    api_calls=[ApiCall(0, "rp", model="gpt-6-astra", input_tok=100, output_tok=10, at=ts(5))],
+                    events=[Event("subagent", ts(10), 0, {"kind": "started", "agent_thread_id": "child"}),
+                            Event("subagent", ts(500), 0, {"kind": "completed", "agent_thread_id": "child"})])
+    # child thread overlaps the parent completely and has a gap + interrupt of its own
+    child = Bundle(Session("child", "codex", cwd="/a", forked_from="p"),
+                   turns=[turn(0, 10, 200, initiator="agent", interrupted=True),
+                          turn(1, 210, 400, initiator="agent", text="ok")],
+                   api_calls=[ApiCall(0, "rc", model="gpt-6-astra", input_tok=1000, output_tok=100, at=ts(20))])
+    # a Claude fork/resume IS human-driven and stays in
+    fork = Bundle(Session("f", "claude", cwd="/b", forked_from="old"), turns=[turn(0, 2000, 2060)])
+    write(conn, parent, child, fork)
+    rid = run(conn)
+    assert val(conn, rid, "overlap_s") == 0
+    assert val(conn, rid, "parallel_s") == 0
+    assert val(conn, rid, "active_s") == 600 + 60 + 60
+    assert val(conn, rid, "B_min") == 0
+    assert val(conn, rid, "interrupts") == 0
+    assert val(conn, rid, "turns") == 3 and val(conn, rid, "sessions") == 2
+    assert val(conn, rid, "gap_bucket:lt30s") == 0 and val(conn, rid, "gap_bucket:30s-2m") == 1
+    # tokens/cost/model mix keep the child's calls; the child counts once as a subagent
+    assert val(conn, rid, "tokens_in") == 1100
+    assert val(conn, rid, "model_mix:gpt-6-astra") == 2
+    assert val(conn, rid, "subagents") == 1

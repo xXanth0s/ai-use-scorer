@@ -80,11 +80,21 @@ def _cached(fn):
     return wrap
 
 
+def _human_lane(t: dict) -> bool:
+    """False for agent-driven turns: initiator="agent", or any turn of a Codex subagent/review thread
+    (session.forked_from set on a codex session). Claude forks/resumes (forked_from set by the Claude
+    parser) are human-driven and stay in."""
+    if t.get("initiator") == "agent":
+        return False
+    return not (t.get("s_agent") == "codex" and t.get("s_forked"))
+
+
 @_cached
 def _turns(conn) -> list[dict]:
-    rows = _rows(conn, "SELECT t.*, s.cwd AS s_cwd, s.repo AS s_repo, s.agent AS s_agent, s.started_at AS s_started"
-                       " FROM turn t LEFT JOIN session s ON s.id = t.session_id")
+    rows = _rows(conn, "SELECT t.*, s.cwd AS s_cwd, s.repo AS s_repo, s.agent AS s_agent, s.started_at AS s_started,"
+                       " s.forked_from AS s_forked FROM turn t LEFT JOIN session s ON s.id = t.session_id")
     for r in rows:
+        r["human"] = _human_lane(r)
         r["start"] = parse_ts(r["prompt_at"])
         r["end"] = parse_ts(r["agent_finished_at"])
         r["day"] = local_day(r["start"])
@@ -117,6 +127,8 @@ def turn_intervals(conn, day: str | None = None) -> list[tuple[str, int, datetim
     out = []
     lo, hi = _day_bounds(day) if day else (None, None)
     for t in _turns(conn):
+        if not t["human"]:
+            continue
         s, e = t["start"], t["end"]
         if not s or not e or e <= s:
             continue
@@ -248,7 +260,7 @@ def _words(text: str | None) -> int:
 
 
 def gaps(conn, day: str | None = None) -> list[Gap]:
-    turns = _turns(conn)
+    turns = [t for t in _turns(conn) if t["human"]]
     enq = _enqueue_map(conn)
     prompts = sorted((t["start"], t["session_id"] or "") for t in turns if t["start"])
     pts = [p[0] for p in prompts]
@@ -288,6 +300,8 @@ def interruptions(conn, day: str | None = None) -> list[dict]:
     out = []
     for e in _rows(conn, "SELECT session_id, turn_id, at FROM event WHERE kind='interrupt'"):
         t = tmap.get(e["turn_id"])
+        if t and not t["human"]:
+            continue  # agent/subagent thread interrupt, not a human interruption
         at = parse_ts(e["at"])
         start = t["start"] if t else None
         d = (t["day"] if t else None) or local_day(at)
@@ -615,6 +629,25 @@ def tooling(conn, day: str | None = None) -> list[dict]:
     return out
 
 
+def _subagent_keys(evs: list[dict], scope_turns: list[dict], in_scope) -> set:
+    """Distinct subagents: subagent events keyed by agent_id / agent_thread_id / tool_use_id (Codex emits
+    started+completed per child), plus Codex subagent thread sessions (forked_from set) in scope."""
+    keys: set = set()
+    for e in evs:
+        if e["kind"] != "subagent" or not in_scope(e):
+            continue
+        try:
+            d = json.loads(e["data"]) if e["data"] else {}
+        except ValueError:
+            d = {}
+        d = d if isinstance(d, dict) else {}
+        keys.add(d.get("agent_id") or d.get("agent_thread_id") or d.get("tool_use_id") or f"event:{e['id']}")
+    for t in scope_turns:
+        if t.get("s_agent") == "codex" and t.get("s_forked"):
+            keys.add(t["session_id"])
+    return keys
+
+
 # --- writer ------------------------------------------------------------------------------------
 
 class _W:
@@ -647,7 +680,8 @@ def _scope(day):
 
 def _emit_scope(w: _W, conn, day: str | None) -> None:
     st, sid = _scope(day)
-    turns = [t for t in _turns(conn) if not day or t["day"] == day]
+    all_turns = [t for t in _turns(conn) if not day or t["day"] == day]
+    turns = [t for t in all_turns if t["human"]]
     w.put("turns", st, sid, len(turns), "turns")
     w.put("sessions", st, sid, len({t["session_id"] for t in turns}), "sessions")
 
@@ -728,9 +762,9 @@ def _emit_scope(w: _W, conn, day: str | None) -> None:
         if pc:
             w.put(f"cost_usd:{m}", st, sid, sum(pc), "usd", len(pc))
 
-    tids = {t["id"] for t in turns}
-    sids = {t["session_id"] for t in turns}
-    evs = _rows(conn, "SELECT session_id, turn_id, at, kind FROM event WHERE kind IN ('subagent','compaction')")
+    tids = {t["id"] for t in all_turns}
+    sids = {t["session_id"] for t in all_turns}
+    evs = _rows(conn, "SELECT id, session_id, turn_id, at, kind, data FROM event WHERE kind IN ('subagent','compaction')")
     tday = {t["id"]: t["day"] for t in _turns(conn)}
 
     def in_scope(e):
@@ -740,7 +774,7 @@ def _emit_scope(w: _W, conn, day: str | None) -> None:
             return tday.get(e["turn_id"]) == day
         return e["session_id"] in sids and local_day(e["at"]) == day
 
-    w.put("subagents", st, sid, sum(1 for e in evs if e["kind"] == "subagent" and in_scope(e)), "count")
+    w.put("subagents", st, sid, len(_subagent_keys(evs, all_turns, in_scope)), "count")
     w.put("compactions", st, sid, sum(1 for e in evs if e["kind"] == "compaction" and in_scope(e)), "count")
     calls = [c for c in _tool_calls(conn) if c["turn_id"] in tids]
     w.put("tool_calls", st, sid, len(calls), "calls")

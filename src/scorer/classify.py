@@ -432,14 +432,17 @@ _TOOL_KINDS = {
     # Codex (current rollouts: custom_tool_call `exec` (JS code mode), function_call `js`, `spawn_agent`)
     "apply_patch": "edit",
     "shell": "bash", "exec_command": "bash", "local_shell": "bash", "unified_exec": "bash",
-    "write_stdin": "bash", "exec": "bash", "js": "bash", "container.exec": "bash",
-    "spawn_agent": "subagent",
+    "write_stdin": "bash", "exec": "bash", "js": "other", "container.exec": "bash",
+    "spawn_agent": "subagent", "send_message": "subagent", "wait_agent": "subagent", "close_agent": "subagent",
     "web_search": "web", "web_search_call": "web", "web__run": "web",
     "view_image": "read",
 }
 
 
 def tool_kind(name: str) -> str:
+    """MCP tools (mcp__*) -> "other"; MCP use is tracked via event(kind=tooling)."""
+    if (name or "").startswith("mcp__"):
+        return "other"
     return _TOOL_KINDS.get(name or "", "other")
 
 

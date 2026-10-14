@@ -128,7 +128,7 @@ def test_bash_edit_paths(cmd, paths):
     ("Grep", "search"), ("Glob", "search"), ("LS", "search"), ("Task", "subagent"), ("Agent", "subagent"),
     ("WebFetch", "web"), ("WebSearch", "web"), ("apply_patch", "edit"), ("shell", "bash"),
     ("exec_command", "bash"), ("local_shell", "bash"), ("unified_exec", "bash"), ("write_stdin", "bash"),
-    ("exec", "bash"), ("spawn_agent", "subagent"), ("send_message", "other"), ("TodoWrite", "other"),
+    ("exec", "bash"), ("spawn_agent", "subagent"), ("send_message", "subagent"), ("js", "other"), ("TodoWrite", "other"),
     ("mcp__x__y", "other"), ("", "other"),
 ])
 def test_tool_kind(name, kind):
