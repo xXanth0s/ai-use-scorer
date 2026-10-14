@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PARSER_VERSION = "1"
-DEFINITION_VERSION = "v1"
+DEFINITION_VERSION = "v2"   # v2: V tier = last relevant check per batch window and lane; V_recovered
 
 INTERRUPT_PREFIX = "[Request interrupted by user"
 
@@ -35,7 +35,9 @@ def events_path() -> Path:
 
 
 def db_path() -> Path:
-    return scorer_home() / "scorer.db"
+    """SCORER_DB=<path> overrides the DB file (demo/seed DBs); else SCORER_HOME/scorer.db."""
+    override = os.environ.get("SCORER_DB")
+    return Path(override).expanduser() if override else scorer_home() / "scorer.db"
 
 
 def clip(text: str | None, n: int = 80) -> str:

@@ -105,6 +105,16 @@ def check(db):
     sys.exit(1 if fails else 0)
 
 
+def _pin_db(db):
+    """`--db PATH` == `SCORER_DB=PATH`: export the absolute path so every later connect(None),
+    the analyst's read-only connections and child processes use the same file."""
+    import os
+    from pathlib import Path
+    if db:
+        os.environ["SCORER_DB"] = str(Path(db).expanduser().resolve())
+    return os.environ.get("SCORER_DB") or db
+
+
 @cli.command()
 @click.option("--day", default=None, help="today | YYYY-MM-DD")
 @click.option("--days", type=int, default=None)
@@ -115,6 +125,7 @@ def report(day, days, db, no_judge):
     from .db import connect, latest_run_id
     if not day and not days:
         day = "today"
+    db = _pin_db(db)
     conn = connect(db)
     judge_note = None
     if not no_judge:
@@ -155,7 +166,7 @@ def report(day, days, db, no_judge):
 def serve(port, db):
     """Local dashboard."""
     from .serve import serve as _serve
-    _serve(db, port)
+    _serve(_pin_db(db), port)
 
 
 @cli.command()
@@ -167,6 +178,7 @@ def judge(day, limit, db):
     import time
     from .db import connect, latest_run_id
     from .judge import resolve_day, run_judge
+    db = _pin_db(db)
     conn = connect(db)
     t0 = time.monotonic()
     st = run_judge(conn, latest_run_id(conn), limit=limit, day=None if day == "all" else resolve_day(day))

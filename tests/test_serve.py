@@ -879,7 +879,9 @@ def test_strengths_and_attribution(server, monkeypatch):
     t0, t1 = info["turn_ids"][0], info["turn_ids"][1]
     monkeypatch.setattr(judge, "strengths", lambda conn, day: [
         {"text": "You asked for the test run right after the parser edit", "category": "verification", "count": 1,
-         "turn_ids": [t0], "example_quote": LONG_PROMPT, "uncalibrated": True, "source": "judge"}], raising=False)
+         "turn_ids": [t0], "example_quote": LONG_PROMPT, "uncalibrated": True, "source": "judge",
+         "episode": "good_spec"},
+        {"text": "x", "count": 1, "turn_ids": [], "episode": LONG_PROMPT}], raising=False)
     monkeypatch.setattr(judge, "attribution", lambda conn, day: {
         "corrections": {"user_preventable": {"count": 2, "turn_ids": [t1, "x"]}, "agent_error": {"count": 1, "turn_ids": [t0]},
                         "environment": {"count": 0, "turn_ids": []}, "secret": LONG_PROMPT},
@@ -890,6 +892,7 @@ def test_strengths_and_attribution(server, monkeypatch):
     assert code == 200 and SENTINEL.encode() not in raw
     it = json.loads(raw)["items"][0]
     assert it["uncalibrated"] and it["turn_ids"] == [t0] and len(it["example_quote"]) == 80
+    assert it["episode"] == "good_spec" and "episode" not in json.loads(raw)["items"][1]
     code, raw, _ = get(base, f"/api/attribution?day={DAY}")
     assert code == 200 and SENTINEL.encode() not in raw
     a = json.loads(raw)

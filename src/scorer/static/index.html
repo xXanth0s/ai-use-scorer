@@ -34,6 +34,7 @@
     <span class="wordmark">scorer</span>
     <span class="sep" aria-hidden="true"></span>
     <span class="crumb" id="crumb">Today</span>
+    <span class="demo-chip" id="demochip" hidden title="This database contains demo/seed sessions (id demo-* or a demo marker)">includes demo data</span>
     <span class="spacer"></span>
     <div class="daypick">
       <button class="btn ghost icon-only" id="prev" type="button" aria-label="Previous day"><svg class="icon"><use href="#i-left"/></svg></button>
@@ -57,9 +58,15 @@
 
     <aside class="ask" id="ask" aria-label="Ask scorer" aria-hidden="true">
       <div class="ask-inner">
+        <div class="ahead">
+          <span class="t">Ask scorer</span>
+          <span class="model" id="askmodel" hidden></span>
+          <span class="sp"></span>
+          <button type="button" class="ghost" id="askclose" aria-label="Close Ask AI"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
         <div class="conv" id="conv"><div class="conv-content" id="log"></div></div>
         <div class="composer">
-          <textarea id="input" rows="1" placeholder="Ask about this day…" aria-label="Message"></textarea>
+          <textarea id="input" rows="1" placeholder="Ask about your sessions…" aria-label="Message"></textarea>
           <button class="send" id="send" type="button" aria-label="Send message" disabled><svg class="icon"><use href="#i-up"/></svg></button>
         </div>
         <div class="peek" id="peek" aria-hidden="true">

@@ -36,7 +36,7 @@ function median(xs) {
   const m = v.length >> 1;
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
-const UNCAL = '<span class="chip-uncal" tabindex="0" title="Judge not yet calibrated (κ on 50 double-labelled turns pending)">uncalibrated</span>';
+const UNCAL = '<span class="chip-uncal" tabindex="0" title="The judge\'s labels aren\'t validated yet against human labels">uncalibrated</span>';
 /* you / agent split: "you" = Pine (foreground), "agent" = muted grey, "none" = empty track (same as Leverage) */
 function splitBar(segs, caption, label) {
   const tot = segs.reduce((a, g) => a + (isNum(g.n) ? g.n : 0), 0);
@@ -81,15 +81,15 @@ const getTrend = (end, n) => { const k = `${end}/${n}`; if (!cache.trend.has(k))
 
 /* ---------------- metric vocabulary ---------------- */
 const SCORED = [
-  { k: 'V', letter: 'V', name: 'Verified edits', desc: 'Share of edit batches followed by a check (tests, build, run). Higher is better.', fmt: pct },
-  { k: 'H', letter: 'H', name: 'Hand edits', desc: 'Edits you made by hand after the agent finished. Lower is better.', fmt: num },
-  { k: 'B_min', letter: 'B', name: 'Blocked', desc: 'Minutes an agent sat waiting on you. Lower is better.', fmt: (v) => (isNum(v) ? `${nf1.format(v)} min` : '—') },
-  { k: 'C', letter: 'C', name: 'Corrections', desc: 'Turns where you corrected or redirected the agent. Lower is better.', fmt: num },
+  { k: 'V', name: 'Edits checked by tests', desc: "Share of the agent's edit batches followed by a relevant test or build run.", fmt: pct },
+  { k: 'H', name: 'Edits you made by hand', desc: 'Files you changed yourself between turns.', fmt: num },
+  { k: 'B_min', name: 'Time agents waited on you', desc: 'Minutes an agent sat blocked on a permission or question from you.', fmt: (v) => (isNum(v) ? `${nf1.format(v)} min` : '—') },
+  { k: 'C', name: 'Times you corrected the agent', desc: 'Turns where you redirected the agent, by cause.', fmt: num },
 ];
 const hUnmeasured = (d) => { const h = d.scored && d.scored.H; return !h || String(h.unit || '').endsWith('(partial)'); };
 const TIER = {
   verified_pass: ['success', 'Verified'],
-  verified_fail: ['destructive', 'Check failed'],
+  verified_fail: ['destructive', 'Tests failing at end'],
   inspected: ['', 'Inspected'],
   none: ['', 'Unverified'],
   no_edits: ['tag', 'No edits'],
@@ -176,7 +176,7 @@ function scoredRows(d, base) {
     }
     const b = base[m.k];
     return `<tr class="row">
-      <td title="${esc(m.desc)}"><div class="metric-name"><span class="metric-letter">${m.letter}</span><span class="t">${m.name}</span></div>${extra}</td>
+      <td title="${esc(m.desc)}"><div class="metric-name"><span class="t">${m.name}</span></div>${extra}</td>
       <td class="num"><span class="metric-val">${val}</span></td>
       <td class="num">${m.k === 'H' && hUnmeasured(d) ? '—' : m.fmt(b.base)}</td>
       <td>${sparkline(b.series)}</td>
@@ -332,117 +332,125 @@ VIEWS_today = async function () {
   const ts = sp.time;
   const tSplit = ts && ts.agent_s + ts.waiting_s ? splitBar([{ n: ts.waiting_s, cls: 'you' }, { n: ts.agent_s, cls: 'agent' }],
     `<b>${dur(ts.waiting_s)} waiting on you</b> · ${dur(ts.agent_s)} agent working`) : '';
-  const band = `<div class="band">
-    <div class="stat"><span class="k">Unverified edits</span>
-      <span class="v">${unvN != null ? unvN : '—'}${V ? `<small>of ${V.n} batches</small>` : ''}</span>
-      <span class="d">${V ? unverifiedDeltaHTML(1 - V.value, unvBase) : 'no edits'}</span>
-      ${V ? evidenceLinks(V.evidence.filter((e) => /^unverified/.test(e.note || '')), 2) : ''}${vSplit}</div>
-    <div class="stat"><span class="k">Blocked</span>
-      <span class="v">${B ? num(B.value) : '0'}<small>min</small></span>
-      <span class="d">${deltaHTML(B ? B.value : 0, base.B_min.base, 'min', true)}</span>
-      ${B ? evidenceLinks(B.evidence, 2) : ''}${bSplit}</div>
-    <div class="stat"><span class="k">Corrections ${UNCAL}</span>
-      <span class="v">${isNum(cTotal) ? `${num(cTotal)}<small>turns</small>` : '—<small>judge pending</small>'}</span>
-      <span class="d">${isNum(cTotal) ? deltaHTML(cTotal, base.C.base, '', true) : 'run <span class="code">scorer judge</span>'}</span>
-      ${causes.length ? evidenceLinks(causes.flatMap((c) => c.evidence || []), 2) : ''}${cSplit}</div>
-    <div class="stat"><span class="k">Active agent time</span>
-      <span class="v">${num(d.computed.active_s / 3600)}<small>h</small></span>
-      <span class="d">${isNum(base.active_h.base) ? `median ${num(base.active_h.base)} h` : 'no 7-day median yet'}</span>
-      <span class="d">${dur(d.computed.overlap_s)} with two or more agents at once</span>${tSplit}</div>
+  const medTxt = (today, b, unit = '', digits) => {
+    if (!isNum(today) || !isNum(b)) return 'no 7-day median yet';
+    const f = (v) => (digits != null ? v.toFixed(digits) : num(v));
+    const diff = today - b;
+    return `${diff > 0 ? '+' : diff < 0 ? '−' : '±'}${f(Math.abs(diff))}${unit} vs 7-day median of ${f(b)}${unit}`;
+  };
+  const unvBaseN = V && isNum(unvBase) ? Math.round(V.n * unvBase) : null;
+  const stats = `<div class="stats">
+    <div class="stat" title="Edit batches the agent made that no relevant test or build run checked."><div class="muted small">Edits not checked by tests</div>
+      <div class="v">${unvN != null ? unvN : '—'}${V ? `<small>of ${V.n}</small>` : ''}</div>
+      <div class="d">${V ? (isNum(unvBase) ? `${pct(1 - V.value)} vs 7-day median of ${pct(unvBase)}` : 'no 7-day median yet') : 'no edits today'}</div>${vSplit}</div>
+    <div class="stat" title="Minutes an agent sat blocked on a permission or question from you."><div class="muted small">Time agents waited on you</div>
+      <div class="v">${B ? num(B.value) : '0'}<small>min</small></div>
+      <div class="d">${medTxt(B ? B.value : 0, base.B_min.base)}</div>${bSplit}</div>
+    <div class="stat" title="Turns where you redirected the agent, by cause."><div class="muted small">Times you corrected the agent ${UNCAL}</div>
+      <div class="v">${isNum(cTotal) ? num(cTotal) : '—'}</div>
+      <div class="d">${isNum(cTotal) ? medTxt(cTotal, base.C.base) : 'judge pending: run <span class="cmd">scorer judge</span>'}</div>${cSplit}</div>
+    <div class="stat" title="Hours with at least one agent working."><div class="muted small">Active agent time</div>
+      <div class="v">${(d.computed.active_s / 3600).toFixed(1)}<small>h</small></div>
+      <div class="d">${medTxt(d.computed.active_s / 3600, base.active_h.base, '', 1)}</div>${tSplit}</div>
   </div>`;
+  void unvBaseN;
 
-  // right now
+  // header subtitle: sessions, repos, agents, cost
+  const live = d.sessions.filter((s) => s.turns.length);
+  const repos = new Set(live.map((s) => s.repo || s.cwd || '?'));
+  const agents = [...new Set(live.map((s) => (s.agent === 'codex' ? 'Codex' : 'Claude Code')))].sort();
+  const costSum = live.reduce((a, s) => a + (s.cost_usd || 0), 0);
+  const sub = live.length ? `${live.length} session${live.length === 1 ? '' : 's'} in ${repos.size} repo${repos.size === 1 ? '' : 's'} · ${agents.join(' and ')} · ${usd(costSum)}` : 'no sessions';
+
+  // right now: unverified
   const un = f.unverified_now || [];
-  const rightNow = un.length ? `<ul class="plain">${un.map((u) => {
+  const rightNow = un.length ? `<div class="card-b lines">${un.map((u) => {
     const s = d.sessions.find((x) => x.id === u.session_id);
     const files = (u.files || []).map((p) => String(p).replace(/\/+$/, '').split('/').slice(-2).join('/'));
     const wl = s ? worktreeOf(s).label : sid8(u.session_id);
-    return `<li><strong style="font-weight:600;max-width:60%" class="trunc" title="${esc((s && s.cwd) || wl)}">${esc(wl)}</strong>${s && branchTxt(s.branch) ? ` <span class="muted">${esc(s.branch)}</span>` : ''}
-      ${turnLinks([u.turn_id])} ${tierBadge(u.tier)}
-      <div class="sub-note" style="display:flex;gap:4px;min-width:0;align-items:baseline"><span class="code" style="min-width:0;max-width:100%">${ltrunc(files.join(', ') || 'files unknown', [u.manifest_dir, (u.files || []).join(', ')].filter(Boolean).join(' · '))}</span>${u.command ? ` · run <code class="cmd">${esc(u.command)}</code>` : ''}</div></li>`;
-  }).join('')}</ul>` : '<p class="sub-note">Every session ended on a verified edit.</p>';
+    const br = s && branchTxt(s.branch) ? ` · ${esc(s.branch)}` : '';
+    return `<div class="ln"><p><span class="trunc" style="max-width:100%" title="${esc((s && s.cwd) || wl)}">${esc(wl)}${br}: ${ltrunc(files.join(', ') || 'files unknown', [u.manifest_dir, (u.files || []).join(', ')].filter(Boolean).join(' · '))}</span> ${turnLinks([u.turn_id])}</p>${u.command ? `<span class="cmd">${esc(u.command)}</span>` : tierBadge(u.tier)}</div>`;
+  }).join('')}</div>` : '<div class="card-b"><p class="sub-note">Every session ended on a verified edit.</p></div>';
 
   // corrections by cause
   const cc = f.corrections || [];
-  const corr = cc.length ? `<ul class="plain">${cc.map((c) => `<li><span class="badge tag">${esc(pretty(c.cause))}</span> ${ownerChip(ownerOf(c.cause, c.turn_id, attr))} ${turnLinks([c.turn_id])}
-      <blockquote class="q">${esc(c.quote)}</blockquote>${c.prevent ? `<div class="sub-note">Prevent it: ${esc(c.prevent)}</div>` : ''}</li>`).join('')}</ul>`
-    : '<p class="sub-note">No corrections labelled by the judge. Run <code class="cmd">scorer judge</code>.</p>';
+  const corr = cc.length ? `<div class="card-b lines">${cc.map((c) => `<div class="ln"><div><p style="font-weight:500">${esc(pretty(c.cause).replace(/^./, (x) => x.toUpperCase()))} ${ownerChip(ownerOf(c.cause, c.turn_id, attr))}</p>
+      <p class="muted">${c.quote ? `“${esc(c.quote)}”` : ''}${c.prevent ? ` Prevent with: ${esc(c.prevent)}` : ''}</p></div>${turnLinks([c.turn_id])}</div>`).join('')}</div>`
+    : '<div class="card-b"><p class="sub-note">No corrections labelled by the judge. Run <span class="cmd">scorer judge</span>.</p></div>';
 
   // worst window
   const w = f.worst_window;
   const blockedTurns = ((B && B.evidence) || []).map((e) => ({ id: e.turn_id, s: +((e.note || '').match(/(\d+)s/) || [0, 0])[1], att: /attended/.test(e.note || '') }));
-  const worst = `${w ? `<p>${esc(w.start)}–${esc(w.end)}: ${num(w.minutes)} min lost across ${w.sessions} session${w.sessions === 1 ? '' : 's'}. ${turnLinks(w.turns)}</p>`
-      : blockedTurns.length ? `<p>Longest waits: ${blockedTurns.slice(0, 3).map((b) => `${turnLinks([b.id])} ${dur(b.s)}`).join(', ')}.</p>` : '<p class="sub-note">No agent waited on you.</p>'}
+  const worst = `<div class="card-b">${w ? `<p style="margin:0 0 14px">${num(w.minutes)} minutes blocked across ${w.sessions} session${w.sessions === 1 ? '' : 's'} ${turnLinks(w.turns)}</p>`
+      : blockedTurns.length ? `<p style="margin:0 0 14px">Longest waits: ${blockedTurns.slice(0, 3).map((b) => `${turnLinks([b.id])} ${dur(b.s)}`).join(', ')}.</p>` : '<p class="sub-note" style="margin:0 0 14px">No agent waited on you.</p>'}
     ${hourStrip(d)}
-    <div class="legend"><span><i class="sw a"></i>Agent working</span><span><i class="sw w"></i>Waiting on you</span><span><i class="sw i"></i>Idle</span></div>`;
+    <div class="legend" style="margin-top:8px"><span><i class="sw seg-a"></i>Agent working</span><span><i class="sw seg-w"></i>Waiting on you</span><span><i class="sw seg-i"></i>Idle</span></div></div>`;
 
   // pattern
-  const p = f.pattern;
-  const pattern = !p ? '<p class="sub-note">Nothing stood out today.</p>' : p.kind === 'verified_session'
-    ? `<p>Session ${esc(p.session)} verified ${p.verified} of ${p.batches} edit batches with ${p.command ? `<code class="cmd">${esc(p.command)}</code>` : 'a test command'}; you asked for ${p.human_initiated} of those checks. ${turnLinks(p.turns)}</p>`
-    : `<p>You reached for <strong>${esc(p.name)}</strong> (${esc(CAT[p.category] || p.category)}) ${p.uses} time${p.uses === 1 ? '' : 's'}.</p>`;
+  const p = f.pattern, ep = f.episode;
+  const pattern = ep ? `<div class="card-b lines"><div class="ln"><div><p><span class="tag episode">${esc(episodeName(ep.episode))}</span> ${ep.uncalibrated ? UNCAL : ''}${ep.count > 1 ? ` <span class="muted small">${num(ep.count)}× today</span>` : ''}</p>
+      <p style="margin-top:6px">${esc(ep.reason || ep.title || '')}</p>${ep.evidence_quote ? `<p class="muted">“${esc(ep.evidence_quote)}”</p>` : ''}</div>${turnLinks(ep.turn_ids || [ep.turn_id], 2)}</div></div>`
+    : !p ? '<div class="card-b"><p class="sub-note">Nothing stood out today.</p></div>' : p.kind === 'verified_session'
+    ? `<div class="card-b lines"><div class="ln"><p>Session ${esc(p.session)} verified ${p.verified} of ${p.batches} edit batches with ${p.command ? `<span class="cmd">${esc(p.command)}</span>` : 'a test command'}; you asked for ${p.human_initiated} of those checks.</p>${turnLinks(p.turns, 1)}</div></div>`
+    : `<div class="card-b lines"><div class="ln"><p>You reached for <strong>${esc(p.name)}</strong> (${esc(CAT[p.category] || p.category)}) ${p.uses} time${p.uses === 1 ? '' : 's'}.</p><span></span></div></div>`;
 
-  // diagnostics row
+  // diagnostics
   const g = {}; for (const x of d.diagnostics) g[x.metric] = x.value;
   const models = d.diagnostics.filter((x) => x.base === 'tokens' && x.key).sort((a, b) => b.value - a.value);
-  const diag = `<div class="diag-row">
-      <div><div class="k">Interruptions</div><div class="v">${d.computed.interrupts}</div></div>
-      <div><div class="k">Median gap</div><div class="v">${dur(g.gap_median_s)}</div></div>
-      <div><div class="k">Tool errors</div><div class="v">${pct(g.tool_error_share)}</div></div>
-      <div><div class="k">Context p50 / p90</div><div class="v">${isNum(g.context_p50) ? Math.round(g.context_p50) : '—'}% / ${isNum(g.context_p90) ? Math.round(g.context_p90) : '—'}%</div></div>
-      <div><div class="k">Tokens</div><div class="v">${tok((g.tokens_in || 0) + (g.tokens_out || 0) + (g.tokens_cached || 0))}</div></div>
-      <div><div class="k">Cost</div><div class="v">${usd(g.cost_usd)}</div></div>
+  const mcost = models.map((m) => { const c = d.diagnostics.find((x) => x.metric === `cost_usd:${m.key}`); return { k: m.key, c: c && c.value }; }).filter((m) => isNum(m.c) && m.c > 0).sort((a, b) => b.c - a.c);
+  const top = skillAgg(d)[0];
+  const ovPct = d.computed.active_s ? Math.round((100 * d.computed.overlap_s) / d.computed.active_s) : null;
+  const diag = `<div class="diag">
+      <div><div class="k">Overlap</div><div class="val">${dur(d.computed.overlap_s)}${ovPct != null ? ` · ${ovPct}%` : ''}</div></div>
+      <div><div class="k">Interruptions</div><div class="val">${num(d.computed.interrupts)}${isNum(g.thrown_s) ? ` · ${dur(g.thrown_s)} of agent work thrown away` : ''}</div></div>
+      <div><div class="k">Context used</div><div class="val">${isNum(g.context_p50) ? `p50 ${Math.round(g.context_p50)}% · p90 ${Math.round(g.context_p90)}%` : '—'}</div></div>
+      <div><div class="k">Cost</div><div class="val">${usd(g.cost_usd)}${mcost.slice(0, 3).map((m) => ` · ${esc(m.k.replace(/^claude-/, ''))} ${usd(m.c)}`).join('')}</div></div>
+      <div><div class="k">Most-used skill</div><div class="val">${top ? `${esc(top.name)} · ${top.you} you, ${top.agent + top.other} agent` : 'none used'} <a class="tlink" href="#/leverage">All</a></div></div>
     </div>
-    <details class="rline plainsum"><summary><span class="rt" style="font-size:14px">Cost by model and all diagnostics</span>${icon('chev', 'icon chev')}</summary>
-      <div class="rb" style="padding-left:0">
-        <table class="models">${models.map((m) => { const c = d.diagnostics.find((x) => x.metric === `cost_usd:${m.key}`); return `<tr><td>${esc(m.key)}</td><td class="r">${tok(m.value)} tokens</td><td class="r">${usd(c && c.value)}</td></tr>`; }).join('')}</table>
+    <details class="diag-more"><summary>Cost by model and all diagnostics${icon('chev')}</summary>
+      <div><table class="models">${models.map((m) => { const c = d.diagnostics.find((x) => x.metric === `cost_usd:${m.key}`); return `<tr><td>${esc(m.key)}</td><td class="r">${tok(m.value)} tokens</td><td class="r">${usd(c && c.value)}</td></tr>`; }).join('')}</table>
         ${diagnostics(d)}</div></details>`;
 
   return `
-  <section class="today-top">
-    <div class="narrative-block">
-      <div class="date">${esc(dayLabel(S.day))}</div>
+  <section class="card" aria-labelledby="h-band">
+    <div class="card-h"><h2 id="h-band">${esc(dayLabel(S.day, { weekday: 'long', day: 'numeric', month: 'long' }).replace(/^(\w+) /, '$1, '))}</h2><span class="muted small">${esc(sub)}</span></div>
+    <div class="card-b band">
       <div id="narrative">${narrativeFallbackHTML(f, true)}</div>
-      ${f.tomorrow && f.tomorrow.change ? `<div class="tomorrow"><b>Tomorrow:</b> ${esc(f.tomorrow.change)}</div>` : ''}
+      ${stats}
     </div>
-    ${band}
   </section>
 
-  <section class="panel timeline-panel">
-    <div class="panel-head"><h2>Day by worktree</h2>
-      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
-        <div class="legend"><span><i class="dot claude"></i>Claude</span><span><i class="dot codex"></i>Codex</span><span><i class="ov"></i>Two or more at once</span><span><i class="tk"></i>Interruption</span></div>
+  <section class="card ov" aria-labelledby="h-day">
+    <div class="card-h"><h2 id="h-day">Day by worktree</h2>
+      <div class="ctl">
+        <div class="legend"><span><i class="sw c-claude"></i>Claude Code</span><span><i class="sw c-codex"></i>Codex</span><span><i class="sw-ovl"></i>Two at once</span><span><i class="sw-tick"></i>Interruption</span></div>
         ${d.temp_hidden || S.includeTemp ? `<button type="button" class="btn outline sm" data-toggle-temp aria-pressed="${S.includeTemp ? 'true' : 'false'}">${S.includeTemp ? 'Hide test/temp sessions' : `Show test/temp sessions (${d.temp_hidden})`}</button>` : ''}
         <button type="button" class="btn outline sm zreset" id="tl-reset" hidden title="Double-click the timeline also resets">Reset zoom</button>
         <button type="button" class="btn outline sm" id="tl-expand" aria-pressed="${S.tlExpanded ? 'true' : 'false'}">${S.tlExpanded ? 'Group by worktree' : 'Show sessions'}</button></div></div>
-    <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
-    <div id="turn-detail"></div>
+    <div class="card-b"><div class="timeline" id="timeline"></div><div id="turn-detail"></div></div>
   </section>
 
-  <section class="grid2">
-    <div class="panel"><div class="panel-head"><h2>Right now: unverified</h2><span class="note">${un.some((u) => u.command) ? 'run before you push' : 'run the tests before you push'}</span></div>${rightNow}</div>
-    <div class="panel"><div class="panel-head"><h2>Worst attention window</h2><span class="note">${B ? `${num(B.value)} min blocked today` : ''}</span></div>${worst}</div>
-  </section>
-  <section class="grid2 eq">
-    <div class="panel"><div class="panel-head"><h2>Corrections by cause ${UNCAL}</h2><span class="note">${causes.map((c) => `${esc(pretty(c.metric.slice(8)))} ${num(c.value)} (${ownerOf(c.metric.slice(8), null, null)})`).join(' · ')}</span></div>${corr}</div>
-    <div class="panel" id="strengths" aria-labelledby="strengths-h">
-      <div class="panel-head"><h2 id="strengths-h">What you did well</h2><span class="note">choices worth repeating</span></div>
-      <div id="strengths-body"><span class="shimmer" style="font-size:13px">Loading</span></div></div>
-  </section>
-  <section class="grid2">
-    <div class="panel"><div class="panel-head"><h2>Pattern to repeat</h2></div>${pattern}
-        <div class="panel-head" style="margin-top:4px"><span class="note">Most-used tools · by you / by the agent</span><a class="note" href="#/leverage">All in Leverage</a></div>
-        ${skillBars(d, 'all', 4)}</div>
-  </section>
+  <div class="grid2">
+    <div class="stack">
+      <section class="card" aria-labelledby="h-now"><div class="card-h"><h2 id="h-now">Right now — unverified</h2><span class="muted small">Run before you push</span></div>${rightNow}</section>
+      <section class="card" aria-labelledby="h-cor"><div class="card-h"><h2 id="h-cor">Corrections by cause ${UNCAL}</h2><span class="muted small">${isNum(cTotal) ? `${num(cTotal)} today` : 'judge pending'}</span></div>${corr}</section>
+    </div>
+    <div class="stack">
+      <section class="card" aria-labelledby="h-blk"><div class="card-h"><h2 id="h-blk">Worst attention window</h2><span class="muted small">${w ? `${esc(w.start)}–${esc(w.end)}` : B ? `${num(B.value)} min blocked` : ''}</span></div>${worst}</section>
+      <section class="card" id="strengths" aria-labelledby="strengths-h"><div class="card-h"><h2 id="strengths-h">What you did well</h2><span class="muted small">Choices worth repeating</span></div>
+        <div id="strengths-body"><div class="card-b"><span class="shimmer" style="font-size:13px">Loading</span></div></div></section>
+      <section class="card" aria-labelledby="h-rep"><div class="card-h"><h2 id="h-rep">Pattern to repeat</h2></div>${pattern}</section>
+    </div>
+  </div>
 
-  <section class="panel">
-    <div class="panel-head"><h2>Diagnostics</h2><span class="note">context for the numbers, not scored</span></div>
+  <section class="card" aria-labelledby="h-diag">
+    <div class="card-h"><h2 id="h-diag">Diagnostics</h2><span class="muted small">Shown, not scored</span></div>
     ${diag}
   </section>
 
-  <section class="panel" id="actions" aria-labelledby="actions-h">
-    <div class="panel-head"><h2 id="actions-h">Action items</h2><span class="note">what to change, with the turns behind it</span></div>
-    <div id="actions-body"><span class="shimmer" style="font-size:13px">Loading action items</span></div>
+  <section class="card" id="actions" aria-labelledby="actions-h">
+    <div class="card-h"><h2 id="actions-h">Action items</h2><span class="muted small">What to do differently, with a line for CLAUDE.md</span></div>
+    <div id="actions-body"><div class="card-b"><span class="shimmer" style="font-size:13px">Loading action items</span></div></div>
   </section>`;
 };
 
@@ -451,25 +459,29 @@ cache.actions = new Map();
 const getActions = (d) => { if (!cache.actions.has(d)) cache.actions.set(d, optional(`/api/actions?day=${d}`)); return cache.actions.get(d); };
 let actionItems = [], strengthItems = [];
 const EPISODES = ['good_spec', 'verification_catch', 'early_redirect', 'scoped_turn', 'knew_when_not_to_delegate'];
+const EPISODE_LABEL = { good_spec: 'Clear spec', verification_catch: 'Caught a bug by testing', early_redirect: 'Redirected early', scoped_turn: 'Small focused ask', knew_when_not_to_delegate: 'Did it yourself' };
+const episodeName = (e) => EPISODE_LABEL[e] || pretty(e);
 cache.strengths = new Map();
 const getStrengths = (d) => { if (!cache.strengths.has(d)) cache.strengths.set(d, optional(`/api/strengths?day=${d}`)); return cache.strengths.get(d); };
-function actionsHTML(r, kind = 'a') {
+const COPY_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+function actionsHTML(r, kind = 'a', limit = 0) {
   const items = (r && r.items) || [];
   const good = kind === 's';
   if (!items.length) {
     const what = good ? 'Strengths' : 'Action items';
-    return `<p class="sub-note">${r && r.available === false ? `${what} appear here once the judge provides them (<code class="cmd">scorer judge</code>).` : r && r.error ? `Could not compute ${what.toLowerCase()} for this day.` : good ? 'Nothing flagged as a strength for this day yet.' : 'No action items for this day.'}</p>`;
+    return `<div class="card-b"><p class="sub-note">${r && r.available === false ? `${what} appear here once the judge provides them (<span class="cmd">scorer judge</span>).` : r && r.error ? `Could not compute ${what.toLowerCase()} for this day.` : good ? 'Nothing flagged as a strength for this day yet.' : 'No action items for this day.'}</p></div>`;
   }
   if (good) { const ord = (a) => (a.episode ? EPISODES.indexOf(a.episode) : 99); items.sort((x, y) => ord(x) - ord(y)); r.items = items; }
-  return `<ol class="actions${good ? ' good' : ''}">${items.map((a, i) => `<li>
-      <span class="an" aria-hidden="true">${i + 1}</span>
-      <div class="ab">
-        <div class="at">${esc(a.text)}</div>
-        <div class="am">${a.episode ? `<span class="badge episode">${esc(pretty(a.episode))}</span>` : ''}${a.category ? `<span class="badge ${good ? 'grass' : 'tag'}">${esc(pretty(a.category))}</span>` : ''}${a.count ? `<span class="muted">${num(a.count)}×</span>` : ''}${a.uncalibrated || a.source === 'judge' ? UNCAL : ''}${turnLinks(a.turn_ids)}
-          <button type="button" class="linkbtn" data-askwhy="${kind}:${i}">${icon('spark')}${good ? 'Ask how to repeat it' : 'Ask why'}</button></div>
-        ${a.example_quote ? `<blockquote class="q">${esc(a.example_quote)}</blockquote>` : ''}
-        ${a.claude_md_line ? `<div class="mdline"><span class="lbl">CLAUDE.md</span><code class="cmd">${esc(a.claude_md_line)}</code><button type="button" class="btn outline sm" data-copyline="${kind}:${i}" aria-label="Copy the CLAUDE.md line">Copy</button></div>` : ''}
-      </div></li>`).join('')}</ol>`;
+  const li = (a, i) => `<li class="act">
+      <span class="actn">${i + 1}</span>
+      <div class="actb">
+        <div class="acth">${a.episode ? `<span class="tag episode">${esc(episodeName(a.episode))}</span>` : ''}${a.category ? `<span class="tag${good ? ' good' : ''}">${esc(pretty(a.category))}</span>` : ''}<span class="ti">${esc(a.episode ? String(a.text || '').replace(/^[^:]{3,40}:\s+/, '').replace(/^./, (c) => c.toUpperCase()) : a.text)}</span>${a.count ? `<span class="muted small">${a.count === 1 ? 'once' : `${num(a.count)} times`}</span>` : ''}${a.uncalibrated || a.source === 'judge' ? UNCAL : ''}</div>
+        ${a.example_quote ? `<p class="muted">“${esc(a.example_quote)}”</p>` : ''}
+        ${a.claude_md_line ? `<div class="actf"><span class="pill"><span class="code">${esc(a.claude_md_line)}</span><button type="button" class="copy" data-copyline="${kind}:${i}" aria-label="Copy line for CLAUDE.md" title="Copy line for CLAUDE.md">${COPY_ICON}</button></span></div>` : ''}
+        <div class="actf">${turnLinks(a.turn_ids)}${(a.turn_ids || []).length ? '<span class="muted" aria-hidden="true">·</span>' : ''}<button type="button" class="ulink" data-askwhy="${kind}:${i}">${good ? 'Ask how to repeat it' : 'Ask why'}</button></div>
+      </div></li>`;
+  const head = limit ? items.slice(0, limit) : items, rest = limit ? items.slice(limit) : [];
+  return `<ol class="acts">${head.map(li).join('')}</ol>${rest.length ? `<details class="diag-more"><summary>Show ${rest.length} more${icon('chev')}</summary><ol class="acts" start="${limit + 1}">${rest.map((a, k) => li(a, k + limit)).join('')}</ol></details>` : ''}`;
 }
 async function fillActions() {
   const day = S.day;
@@ -478,14 +490,14 @@ async function fillActions() {
   const box = $('#actions-body'), gb = $('#strengths-body');
   actionItems = (r && r.items) || [];
   strengthItems = (g && g.items) || [];
-  if (gb) gb.innerHTML = actionsHTML(g, 's');
+  if (gb) gb.innerHTML = actionsHTML(g, 's', 3);
   if (box) box.innerHTML = actionsHTML(r, 'a');
 }
 const listItem = (key) => { const [k, i] = String(key).split(':'); return (k === 's' ? strengthItems : actionItems)[+i]; };
 
 function narrativeFallbackHTML(f, loading) {
-  return `<h1>${esc((f.verdict && f.verdict.text) || 'No agent activity recorded.')}</h1>
-    <div class="byline">${loading && !missing.has('/api/narrative') && chat.available ? '<span class="shimmer" style="font-size:13px">Writing the daily narrative</span>' : (chat.available ? 'Deterministic verdict. This server does not provide the analyst narrative yet.' : 'Deterministic verdict. Set ANTHROPIC_API_KEY for the analyst narrative.')}</div>`;
+  return `<div class="narr"><p>${esc((f.verdict && f.verdict.text) || 'No agent activity recorded.')}${f.tomorrow && f.tomorrow.change ? ` Tomorrow: ${esc(f.tomorrow.change)}` : ''}</p></div>
+    <div class="by">${icon('spark')}${loading && !missing.has('/api/narrative') && chat.available ? '<span class="shimmer" style="font-size:13px">The analyst agent is writing the daily narrative</span>' : (chat.available ? 'Deterministic verdict. This server does not provide the analyst narrative yet.' : 'Deterministic verdict. Set ANTHROPIC_API_KEY for the analyst narrative.')}</div>`;
 }
 
 let narrCites = {};
@@ -498,7 +510,7 @@ async function fillNarrative() {
   if (!b2 || S.day !== day || S.tab !== 'today') return;
   if (n && n.markdown) {
     narrCites = {}; for (const c of n.citations || []) narrCites[c.n] = c;
-    b2.innerHTML = `<div class="md narr">${md(n.markdown)}</div><div class="byline">Written by analyst agent${n.model ? ` · ${esc(n.model)}` : chat.model ? ` · ${esc(chat.model)}` : ''}${n.generated_at ? ` · ${hhmm(n.generated_at)}` : ''}${n.cached ? ' · cached' : ''}</div>`;
+    b2.innerHTML = `<div class="md narr">${md(n.markdown)}</div><div class="by">${icon('spark')}Written by the analyst agent${n.generated_at ? ` at ${hhmm(n.generated_at)}` : ''}${n.model ? ` · ${esc(n.model)}` : chat.model ? ` · ${esc(chat.model)}` : ''}${n.cached ? ' · cached' : ''}</div>`;
   } else {
     const f = (await getReport(day)) || factsFallback(await getDay(day));
     b2.innerHTML = narrativeFallbackHTML(f, false);
@@ -564,12 +576,13 @@ function hourStrip(d) {
     hours = [];
     for (let h = t0; h < t1; h += hour) hours.push({ t: h, a: within(active, h, h + hour) / hour, w: within(waiting, h, h + hour) / hour });
   }
-  return `<div class="hours" role="img" aria-label="Agent working, waiting and idle per hour">${hours.map((h) => {
-    const a = Math.min(h.a, 1), w = Math.min(h.w, 1 - a);
-    return `<div class="hr" title="${hhmm(new Date(h.t).toISOString())}: ${Math.round(h.a * 60)} min working, ${Math.round(h.w * 60)} min waiting on you">
-      <div class="cell"><span class="w" style="height:${(w * 100).toFixed(1)}%"></span><span class="a" style="height:${(a * 100).toFixed(1)}%"></span></div>
-      <span class="lb">${hhmm(new Date(h.t).toISOString())}</span></div>`;
-  }).join('')}</div>`;
+  const cols = `grid-template-columns:repeat(${hours.length},minmax(0,1fr))`;
+  const lbl = (t) => String(new Date(t).getHours()).padStart(2, '0');
+  return `<div class="strip" style="${cols}" role="img" aria-label="Agent working, waiting and idle minutes per hour">${hours.map((h) => {
+    const a = Math.min(h.a, 1), w = Math.min(h.w, 1 - a), i = Math.max(0, 1 - a - w);
+    return `<div class="hr" title="${hhmm(new Date(h.t).toISOString())}: ${Math.round(h.a * 60)} min working, ${Math.round(h.w * 60)} min waiting on you"><div class="seg-i" style="height:${(i * 100).toFixed(1)}%"></div><div class="seg-w" style="height:${(w * 100).toFixed(1)}%"></div><div class="seg-a" style="height:${(a * 100).toFixed(1)}%"></div></div>`;
+  }).join('')}</div>
+  <div class="strip lbls" style="${cols}">${hours.map((h, k) => `<span>${hours.length > 14 && k % 2 ? '' : lbl(h.t)}</span>`).join('')}</div>`;
 }
 
 /* ---- timeline svg: grouped by worktree/repo ---- */
@@ -611,56 +624,71 @@ function drawTimeline() {
     }
     const firstTick = Math.ceil(t0 / step) * step;
 
-    const W = Math.max(host.clientWidth, 480), LBL = 200, R = 8, TOP = 22, LANE = 28, GH = 24, BAR = 12, STRIP = 32;
+    const W = Math.max(host.clientWidth, 480), LBL = W < 700 ? 120 : 220, R = 0, GH = 30, LANE = 32, BAR = 6, AX = 26;
     const x = (ms) => LBL + ((ms - t0) / (t1 - t0)) * (W - LBL - R);
-    const rows = [];
+    // mockup A: a repo header row, then one 32px lane per worktree (or per session when expanded)
+    const repoOf = (s) => s.repo || (s.cwd ? String(s.cwd).replace(/\/+$/, '').split('/').pop() : 'unknown repo');
+    const byRepo = new Map();
     for (const g of groups.values()) {
-      if (S.tlExpanded) { rows.push({ type: 'ghead', g, h: GH }); for (const s of g.sessions) rows.push({ type: 'session', g, s, turns: s.turns, h: LANE }); }
-      else rows.push({ type: 'group', g, turns: g.sessions.flatMap((s) => s.turns.map((t) => ({ ...t, _s: s }))), h: LANE });
+      const r = repoOf(g.sessions[0]);
+      if (!byRepo.has(r)) byRepo.set(r, []);
+      byRepo.get(r).push(g);
+    }
+    const rows = [];
+    for (const [repo, gs] of byRepo) {
+      rows.push({ type: 'repo', repo, h: GH });
+      for (const g of gs) {
+        if (S.tlExpanded) for (const s of g.sessions) rows.push({ type: 'session', g, s, turns: s.turns, h: LANE });
+        else rows.push({ type: 'group', g, turns: g.sessions.flatMap((s) => s.turns.map((t) => ({ ...t, _s: s }))), h: LANE });
+      }
     }
     const lanesH = rows.reduce((a, r) => a + r.h, 0);
-    const H = TOP + lanesH + 4;
+    const H = lanesH + AX;
     const parts = [];
-    for (let t = firstTick; t <= t1; t += step) {
-      const xx = x(t).toFixed(1);
-      parts.push(`<line class="grid" x1="${xx}" x2="${xx}" y1="${TOP - 4}" y2="${TOP + lanesH}"/>`);
-      parts.push(`<text x="${xx}" y="12" text-anchor="${t + step > t1 ? 'end' : 'middle'}">${hhmm(new Date(t).toISOString())}</text>`);
-    }
     for (const o of d.overlap) {
       const a = x(+new Date(o.start)), b = x(+new Date(o.end));
-      parts.push(`<rect class="overlap" clip-path="url(#tlclip)" x="${a.toFixed(1)}" y="${TOP - 4}" width="${Math.max(b - a, 1).toFixed(1)}" height="${lanesH + 4}"/>`);
+      parts.push(`<rect class="overlap" clip-path="url(#tlclip)" x="${a.toFixed(1)}" y="0" width="${Math.max(b - a, 1).toFixed(1)}" height="${lanesH}"/>`);
     }
-    let y = TOP;
+    let y = 0;
     const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-    rows.forEach((r, i) => {
+    const maxCh = Math.floor((LBL - 30) / 8);
+    const agentName = (ss) => [...new Set(ss.map((s) => (s.agent === 'codex' ? 'Codex' : 'Claude')))].join(' · ');
+    rows.forEach((r) => {
       const cy = y + r.h / 2;
-      if (i && (r.type !== 'session')) parts.push(`<line class="grid" x1="0" x2="${W}" y1="${y}" y2="${y}"/>`);
-      if (r.type === 'ghead' || r.type === 'group') {
-        parts.push(`<text class="group-label" x="0" y="${cy + (r.type === 'group' && r.g.branch ? -1 : 4)}">${esc(trunc(r.g.label, 24))}<title>${esc(r.g.label)}</title></text>`);
-        if (r.type === 'group' && r.g.branch) parts.push(`<text class="group-sub" x="0" y="${cy + 11}">${esc(trunc(r.g.branch + (r.g.sessions.length > 1 ? ` · ${r.g.sessions.length} sessions` : ''), 30))}</text>`);
-        if (r.type === 'ghead' && r.g.branch) parts.push(`<text class="group-sub" x="${Math.min(8 + r.g.label.length * 7.4, 190)}" y="${cy + 4}">${esc(trunc(r.g.branch, 14))}</text>`);
+      if (r.type === 'repo') {
+        parts.push(`<text class="g-lbl" x="0" y="${y + r.h - 7}">${esc(trunc(r.repo, maxCh + 4))}<title>${esc(r.repo)}</title></text>`);
+        parts.push(`<line class="rule" x1="${LBL}" x2="${W}" y1="${y + r.h - 0.5}" y2="${y + r.h - 0.5}"/>`);
+        y += r.h; return;
       }
-      if (r.type !== 'ghead') {
-        const hitAttr = r.type === 'session' ? `data-lane-session="${esc(r.s.id)}"` : `data-lane-group="${esc(r.g.key)}"`;
-        parts.push(`<rect class="lane-hit" ${hitAttr} x="0" y="${y}" width="${W}" height="${r.h}"/>`);
-        if (r.type === 'session') {
-          parts.push(`<rect x="12" y="${cy - 4}" width="8" height="8" rx="2" fill="var(--lane-${r.s.agent === 'codex' ? 'codex' : 'claude'})" pointer-events="none"/>`);
-          parts.push(`<text x="28" y="${cy + 4}" pointer-events="none">${esc(r.s.short)} · ${r.s.turns.length} turn${r.s.turns.length === 1 ? '' : 's'}</text>`);
-        }
-        for (const t of r.turns) {
-          const s = t._s || r.s;
-          const a = x(+new Date(t.start)), b = x(endOf(t));
-          const cls = `bar ${s.agent === 'codex' ? 'codex' : 'claude'}${t.interrupted ? ' interrupted' : ''}${S.selTurn === t.id ? ' sel' : ''}`;
-          parts.push(`<rect class="${cls}" clip-path="url(#tlclip)" data-turn="${t.id}" data-sess="${esc(s.id)}" x="${a.toFixed(1)}" y="${cy - BAR / 2}" width="${Math.max(b - a, 3).toFixed(1)}" height="${BAR}" rx="2"/>`);
-        }
-        const ints = r.type === 'session' ? (r.s.interrupts || []) : r.g.sessions.flatMap((s) => s.interrupts || []);
-        for (const it of ints) {
-          const xx = x(+new Date(it.at)).toFixed(1);
-          parts.push(`<line class="tick" x1="${xx}" x2="${xx}" y1="${cy - BAR / 2 - 4}" y2="${cy + BAR / 2 + 4}" pointer-events="none"/>`);
-        }
+      const ss = r.type === 'session' ? [r.s] : r.g.sessions;
+      const demo = ss.some((s) => s.demo) ? '<tspan class="demo-tag" dx="6">demo</tspan>' : '';
+      const hitAttr = r.type === 'session' ? `data-lane-session="${esc(r.s.id)}"` : `data-lane-group="${esc(r.g.key)}"`;
+      parts.push(`<rect class="lane-hit" ${hitAttr} x="0" y="${y}" width="${W}" height="${r.h}"/>`);
+      const lead = r.type === 'session' ? `${r.s.short} · ${r.s.turns.length} turn${r.s.turns.length === 1 ? '' : 's'}`
+        : (r.g.branch || String(r.g.label).split('/').pop());
+      const leadT = trunc(lead, Math.max(6, maxCh - 7));
+      parts.push(`<rect x="14" y="${cy - 4}" width="8" height="8" rx="2" fill="var(--lane-${ss[0].agent === 'codex' ? 'codex' : 'claude'})" pointer-events="none"/>`);
+      parts.push(`<text class="l-lbl" x="30" y="${cy + 5}" pointer-events="none">${esc(leadT)}<tspan class="ag" dx="8">${esc(agentName(ss))}</tspan>${demo}<title>${esc(r.g.label)}${r.g.branch ? ` · ${esc(r.g.branch)}` : ''}${ss.length > 1 ? ` · ${ss.length} sessions` : ''}</title></text>`);
+      for (const t of r.turns) {
+        const s = t._s || r.s;
+        const a = x(+new Date(t.start)), b = x(endOf(t));
+        const cls = `bar ${s.agent === 'codex' ? 'codex' : 'claude'}${t.interrupted ? ' interrupted' : ''}${S.selTurn === t.id ? ' sel' : ''}`;
+        parts.push(`<rect class="${cls}" clip-path="url(#tlclip)" data-turn="${t.id}" data-sess="${esc(s.id)}" x="${a.toFixed(1)}" y="${cy - BAR / 2}" width="${Math.max(b - a, 3).toFixed(1)}" height="${BAR}" rx="3"/>`);
+      }
+      const ints = r.type === 'session' ? (r.s.interrupts || []) : r.g.sessions.flatMap((s) => s.interrupts || []);
+      for (const it of ints) {
+        const xx = x(+new Date(it.at)).toFixed(1);
+        parts.push(`<line class="tick" clip-path="url(#tlclip)" x1="${xx}" x2="${xx}" y1="${cy - 7}" y2="${cy + 7}" pointer-events="none"/>`);
       }
       y += r.h;
     });
+    // axis at the bottom (mockup .axis): top rule + centred hour labels
+    parts.push(`<line class="rule" x1="${LBL}" x2="${W}" y1="${lanesH + 0.5}" y2="${lanesH + 0.5}"/>`);
+    for (let t = firstTick; t <= t1; t += step) {
+      const xx = x(t);
+      const anchor = xx > W - 24 ? 'end' : xx < LBL + 24 ? 'start' : 'middle';
+      parts.push(`<text x="${xx.toFixed(1)}" y="${lanesH + 19}" text-anchor="${anchor}">${hhmm(new Date(t).toISOString())}</text>`);
+    }
     host._map = { t0, t1, LBL, R, W };
     host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Agent activity by worktree"><defs><clipPath id="tlclip"><rect x="${LBL}" y="0" width="${W - LBL - R}" height="${H}"/></clipPath></defs>${parts.join('')}</svg><div class="zsel" hidden></div>`;
     const rz = $('#tl-reset'); if (rz) rz.hidden = !S.tlZoom;
@@ -717,12 +745,13 @@ async function showPop(el) {
   } else return;
   if (popKey === key && pop.classList.contains('show')) return;
   popKey = key; popPrefill = prefill;
-  pop.innerHTML = `<div class="ph">${head}</div><div class="pb"><span class="shimmer" style="font-size:13px">Summarizing</span></div><div class="pm">${meta}</div>
-    <button type="button" class="btn outline sm" data-askabout>${icon('spark')}Ask about this in chat</button>`;
+  pop.innerHTML = `<span class="eyebrow">Summary by the analyst agent</span><div class="ph">${head}</div><div class="pm">${meta}</div><p class="pb"><span class="shimmer" style="font-size:13px">Summarizing</span></p>
+    <button type="button" class="ulink" data-askabout>Ask about this in chat</button>`;
   pop.classList.add('show'); placePop(el);
   const sm = sessionId && chat.available ? await summaryFor(sessionId, turnId) : null;
   if (popKey !== key) return;
   if (sm && sm.summary) { pop.querySelector('.pb').textContent = sm.summary; }
+  else if (pop.querySelector('.eyebrow')) pop.querySelector('.eyebrow').textContent = el.dataset.turn ? 'Turn prompt (clipped)' : 'Session';
   else {
     const fb = await fallback();
     if (popKey !== key) return;
@@ -852,25 +881,25 @@ VIEWS_sessions = async function () {
     const tt = s.tokens ? `${tok(s.tokens.in)} in · ${tok(s.tokens.cached)} cached · ${tok(s.tokens.out)} out` : '';
     return `<tr class="row clickable${S.selSession === s.id ? ' expanded' : ''}" data-session="${esc(s.id)}" tabindex="0" aria-expanded="${S.selSession === s.id ? 'true' : 'false'}">
       <td class="clip" title="${esc(`${s.cwd || wt.label} ${s.branch || ''}`)}"><span style="display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0"><span class="dot ${s.agent === 'codex' ? 'codex' : 'claude'}"></span><span class="trunc" title="${esc(s.cwd || wt.label)}">${esc(wt.label)}</span></span>${branchTxt(s.branch) ? ` <span class="muted" style="font-size:13px">${esc(s.branch)}</span>` : ''}
-        <div class="muted" style="font-size:12px;padding-left:16px">${s.agent === 'codex' ? 'Codex' : 'Claude'} · ${esc(s.short)}${s.parent_id ? ' · subagent thread' : ''}${s.temp ? ' · <span class="badge tag">temp</span>' : ''}</div></td>
+        <div class="muted" style="font-size:12px;padding-left:16px">${s.agent === 'codex' ? 'Codex' : 'Claude'} · ${esc(s.short)}${s.parent_id ? ' · subagent thread' : ''}${s.temp ? ' · <span class="badge tag">temp</span>' : ''}${s.demo ? ' · <span class="badge demo">demo</span>' : ''}</div></td>
       <td style="padding-top:16px">${mini(s)}</td>
       <td class="num">${hhmm(s.turns[0].start)}–${hhmm(s.turns[s.turns.length - 1].end)}</td>
       <td class="num">${s.turns.length}</td>
       <td class="num">${dur(isNum(s.active_s) ? s.active_s : unionSeconds(s.turns))}</td>
-      <td>${ed ? `<div class="vcell" title="${ok} verified, ${fail} check failed, ${unv} unverified of ${ed} edit batches"><div class="vbar" style="flex:1"><span class="ok" style="width:${p(ok)}"></span><span class="fail" style="width:${p(fail)}"></span><span class="unv" style="width:${p(unv)}"></span></div><span class="t">${ok + fail}/${ed}</span></div>` : '<span class="muted" style="font-size:13px">no edits</span>'}</td>
+      <td>${ed ? `<div class="vcell" title="${ok} verified, ${fail} tests failing at end, ${unv} unverified of ${ed} edit batches"><div class="vbar" style="flex:1"><span class="ok" style="width:${p(ok)}"></span><span class="fail" style="width:${p(fail)}"></span><span class="unv" style="width:${p(unv)}"></span></div><span class="t">${ok + fail}/${ed}</span></div>` : '<span class="muted" style="font-size:13px">no edits</span>'}</td>
       <td class="num">${blocked[s.id] ? dur(blocked[s.id]) : '—'}</td>
       <td class="num" title="${esc(tt)}">${tok(tokTotal(s))}</td>
       <td class="num">${usd(s.cost_usd)}</td></tr>`;
   }).join('');
   return `
-  <section class="panel" style="padding:0;overflow:hidden">
-    <div class="panel-head" style="padding:16px 20px 0"><h2>Sessions</h2>
+  <section class="card">
+    <div class="card-h"><h2>Sessions</h2>
       <div class="legend"><span>${esc(dayLabel(S.day))} · ${ss.length} sessions · ${nTurns} turns · ${tok(totTok)} tokens · ${usd(totCost)}</span>
-        <span><i class="sw ok"></i>Verified</span><span><i class="sw fail"></i>Check failed</span><span><i class="sw unv"></i>Unverified</span>${tempBtn}</div></div>
-    <table class="sess" style="margin-top:12px">
+        <span><i class="sw ok"></i>Verified</span><span><i class="sw fail"></i>Tests failing at end</span><span><i class="sw unv"></i>Unverified</span>${tempBtn}</div></div>
+    <div class="tblwrap"><table class="sess">
       <colgroup><col style="width:20%"><col style="width:18%"><col style="width:10%"><col style="width:5%"><col style="width:8%"><col style="width:13%"><col style="width:8%"><col style="width:9%"><col style="width:9%"></colgroup>
       <thead><tr><th>Worktree</th><th><div style="display:flex;justify-content:space-between;gap:8px"><span>Activity</span><span style="font-weight:400">${hhmm(new Date(t0).toISOString())}–${hhmm(new Date(t1).toISOString())}</span></div></th><th class="num">Time</th><th class="num">Turns</th><th class="num">Active</th><th>Verified batches</th><th class="num">Blocked</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="9" class="muted">No sessions.</td></tr>'}</tbody></table>
+      <tbody>${rows || '<tr><td colspan="9" class="muted">No sessions.</td></tr>'}</tbody></table></div>
   </section>
   <div id="sel-session"></div>`;
 };
@@ -1029,12 +1058,12 @@ VIEWS_trends = async function () {
     .map((k) => ({ k: k.slice(8), s: sr[k], total: sr[k].reduce((a, v) => a + (v || 0), 0) })).sort((a, b) => b.total - a.total);
   const causeStacks = causes.map((c, i) => ({ name: pretty(c.k), series: c.s, color: shade(i < 2 ? 'var(--brand-clay)' : fg, i < 2 ? i : i - 2) }));
   const scored = [
-    mult('V verified edits', vSub, V, pct),
-    mult('H hand edits', hSub, Hs, num),
-    mult('B blocked', `Minutes an agent waited on you. Median ${minF(median(z('B_min')))}.`, z('B_min'), minF),
+    mult('Edits checked by tests', `Share of the agent\'s edit batches followed by a relevant test or build run. ${vSub}`, V, pct),
+    mult('Edits you made by hand', `Files you changed yourself between turns. ${hSub}`, Hs, num),
+    mult('Time agents waited on you', `Minutes an agent sat blocked on a permission or question from you. Median ${minF(median(z('B_min')))}.`, z('B_min'), minF),
     causeStacks.length
-      ? multS(`C corrections ${UNCAL}`, `Turns you corrected, by judge cause. Median ${num(median(C))}. Days the judge has not run are gaps.`, causeStacks, num)
-      : mult(`C corrections ${UNCAL}`, `Turns you corrected. ${C.some(isNum) ? `Median ${num(median(C))}.` : 'Run <code class="cmd">scorer judge</code>.'}`, C, num),
+      ? multS(`Times you corrected the agent ${UNCAL}`, `Turns where you redirected the agent, by cause. Median ${num(median(C))}. Days the judge has not run are gaps.`, causeStacks, num)
+      : mult(`Times you corrected the agent ${UNCAL}`, `Turns where you redirected the agent. ${C.some(isNum) ? `Median ${num(median(C))}.` : 'Run <code class="cmd">scorer judge</code>.'}`, C, num),
   ].join('');
 
   const gapKeys = [['gap_bucket:lt30s', '< 30 s'], ['gap_bucket:<30s', '< 30 s'], ['gap_bucket:30s-2m', '30 s–2 min'], ['gap_bucket:2-5m', '2–5 min'], ['gap_bucket:5-15m', '5–15 min'], ['gap_bucket:break', 'break > 15 min']]
@@ -1081,12 +1110,12 @@ VIEWS_trends = async function () {
     <div><h1 class="page-title">Trends</h1><p class="page-sub">Last ${n} days to ${esc(short(t.days[cur]))}. Dark bar: selected day. Dashed line: median of the days with data.</p></div>
     <div class="seg" role="group" aria-label="Range">${[7, 14, 30].map((k) => `<button type="button" data-range="${k}" aria-pressed="${n === k}">${k} days</button>`).join('')}</div>
   </section>
-  <section class="section"><div class="section-head"><h2>Scored</h2><span class="note">V, H, B, C</span></div><div class="multiples auto">${scored}</div></section>
+  <section class="section"><div class="section-head"><h2>Scored</h2><span class="note">the four numbers the scorer grades</span></div><div class="multiples auto">${scored}</div></section>
   <section class="section"><div class="section-head"><h2>Time</h2><span class="note">active, parallel, interruptions, gaps</span></div><div class="multiples auto">${time}</div></section>
   <section class="section"><div class="section-head"><h2>Agents &amp; cost</h2><span class="note">tokens, cost by model, subagents, context</span></div><div class="multiples auto">${agents}</div></section>
   <details class="rline trends-by-day">
     <summary><span class="rt">By day</span><span class="rs">table of the days with activity</span>${icon('chev', 'icon chev')}</summary>
-    <div class="rb"><div class="table-shell"><table><thead><tr><th>Day</th><th class="num">V</th><th class="num">H</th><th class="num">B min</th><th class="num">C</th><th class="num">Active h</th><th class="num">Interrupts</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
+    <div class="rb"><div class="table-shell"><table><thead><tr><th>Day</th><th class="num">Checked by tests</th><th class="num">Hand edits</th><th class="num">Waited on you, min</th><th class="num">Corrections</th><th class="num">Active h</th><th class="num">Interrupts</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
     <tbody>${dayRows || '<tr><td colspan="9" class="muted">No activity.</td></tr>'}</tbody></table></div></div>
   </details>`;
 };
@@ -1101,32 +1130,31 @@ VIEWS_leverage = async function () {
   const f = S.skillCat || 'all';
   const segs = [['all', 'All'], ['skill', 'Skills'], ['command', 'Commands'], ['mcp', 'MCP servers'], ['plugin', 'Plugins']];
   return `
-  <section>
-    <h1 class="page-title">Leverage</h1>
-    <p class="page-sub">Not scored. How work was delegated on ${esc(dayLabel(S.day))}, and who started it.</p>
-  </section>
-  <dl class="dl2">
-    <div><dt>Subagents launched</dt><dd>${num(L.subagents)}</dd></div>
-    <div><dt>Skill, command, MCP and plugin uses</dt><dd>${num(totalUses)}</dd></div>
-    <div><dt>Context compactions</dt><dd>${num(L.compactions)}</dd></div>
-    <div><dt>Started by you</dt><dd>${pct(T.human_share)}</dd></div>
-  </dl>
-  <section class="section">
-    <div class="section-head"><h2>Skills and tools</h2>
+  <p class="muted" style="margin:0">Context for the scored numbers on ${esc(dayLabel(S.day))}. These depend on the agent and are easy to game, so they never count.</p>
+  <section class="card"><div class="diag">
+    <div><div class="k">Subagents launched</div><div class="val">${num(L.subagents)}</div></div>
+    <div><div class="k">Skill, command, MCP and plugin uses</div><div class="val">${num(totalUses)}</div></div>
+    <div><div class="k">Started by you</div><div class="val">${pct(T.human_share)}</div></div>
+    <div><div class="k">Context compactions</div><div class="val">${num(L.compactions)}</div></div>
+  </div></section>
+  <div class="grid2">
+  <section class="card">
+    <div class="card-h"><h2>Most-used tooling</h2>
       <div class="seg" role="group" aria-label="Category">${segs.map(([k, l]) => `<button type="button" data-skillcat="${k}" aria-pressed="${f === k}">${l}</button>`).join('')}</div></div>
-    <div class="legend"><span><i class="sw you"></i>Started by you</span><span><i class="sw agt"></i>Started by the agent</span><span class="muted">Counts: you / agent</span></div>
-    <div id="skillbars">${skillBars(d, f)}</div>
+    <div class="card-b"><div id="skillbars">${skillBars(d, f)}</div>
+    <div class="legend" style="margin-top:8px"><span><i class="sw you"></i>Started by you</span><span><i class="sw agt"></i>Started by the agent</span><span class="muted">Counts: you / agent</span></div>
+  ${cats.some(([, c]) => c.default) ? `<p class="sub-note" style="margin-top:8px">Hooks and CLAUDE.md / AGENTS.md started ${num(cats.reduce((a, [, c]) => a + (c.default || 0), 0))} calls on their own. Those count as default, not you or the agent.</p>` : ''}</div>
   </section>
-  ${cats.some(([, c]) => c.default) ? `<p class="sub-note">Hooks and CLAUDE.md / AGENTS.md started ${num(cats.reduce((a, [, c]) => a + (c.default || 0), 0))} calls on their own. Those count as default, not you or the agent.</p>` : ''}
-  <section class="section">
-    <div class="section-head"><h2>Subagents</h2><span class="note">not scored</span></div>
-    ${Array.isArray(L.subagent_types) && L.subagent_types.length ? `<div class="table-shell"><table><thead><tr><th>Subagent</th><th class="num">Runs</th><th>Started by</th><th class="num">Median time</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>
+  <section class="card">
+    <div class="card-h"><h2>Subagents</h2><span class="muted small">${num(L.subagents)} runs</span></div>
+    ${Array.isArray(L.subagent_types) && L.subagent_types.length ? `<div class="tblwrap"><table><thead><tr><th>Subagent</th><th class="num">Runs</th><th>Started by</th><th class="num">Median time</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>
       ${L.subagent_types.map((a) => `<tr class="row"><td class="mono" style="font-size:13px">${esc(a.name)}</td><td class="num">${num(a.runs)}</td><td>${esc(Object.entries(a.initiators || {}).map(([k, v]) => `${k === 'human' ? 'you' : k} ${v}`).join(' · '))}</td><td class="num">${dur(a.median_s)}</td><td class="mono" style="font-size:12.5px">${esc(a.model || '—')}</td><td class="num">${tok(a.tokens)}</td><td class="num">${usd(a.cost_usd)}</td></tr>`).join('')}</tbody></table></div>`
-      : `<p class="sub-note">${num(L.subagents)} subagent runs today. A breakdown by subagent type is not available from this server yet.</p>`}
+      : `<div class="card-b"><p class="sub-note">${num(L.subagents)} subagent runs today. A breakdown by subagent type is not available from this server yet.</p></div>`}
   </section>
-  <section class="section">
-    <div class="section-head"><h2>By category</h2></div>
-    <div class="table-shell"><table><thead><tr><th>Category</th><th class="num">You</th><th class="num">Agent</th><th class="num">Default</th><th class="num">Total</th></tr></thead>
+  </div>
+  <section class="card">
+    <div class="card-h"><h2>By category</h2></div>
+    <div class="tblwrap"><table><thead><tr><th>Category</th><th class="num">You</th><th class="num">Agent</th><th class="num">Default</th><th class="num">Total</th></tr></thead>
     <tbody>${cats.length ? cats.sort((a, b) => (b[1].total || 0) - (a[1].total || 0)).map(([k, c]) => `<tr class="row"><td>${esc(CAT[k] || k)}</td><td class="num">${num(c.human)}</td><td class="num">${num(c.agent)}</td><td class="num">${num(c.default)}</td><td class="num">${num(c.total)}</td></tr>`).join('') : '<tr><td colspan="5" class="muted">No tooling use.</td></tr>'}</tbody></table></div>
   </section>`;
 };
@@ -1160,7 +1188,7 @@ document.addEventListener('click', (e) => {
   const aw = e.target.closest('[data-askwhy]');
   if (aw) { const good = aw.dataset.askwhy.startsWith('s:'); const a = listItem(aw.dataset.askwhy); if (a) { setAsk(true); const ids = (a.turn_ids || []).slice(0, 5).map((t) => `#${t}`).join(', '); input.value = good ? `What exactly did I do well here: "${a.text}"? Show me the turns${ids ? ` (${ids})` : ''} and how to make it a habit.` : `Why this action item: "${a.text}"? Walk me through the evidence${ids ? ` (turns ${ids})` : ''} and what to change.`; autoGrow(); syncComposer(); setTimeout(() => input.focus(), 330); } return; }
   const cl = e.target.closest('[data-copyline]');
-  if (cl) { const a = listItem(cl.dataset.copyline); if (a && a.claude_md_line) { const done = (ok) => { cl.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(() => { cl.textContent = 'Copy'; }, 1500); }; try { navigator.clipboard.writeText(a.claude_md_line).then(() => done(true), () => done(false)); } catch (err) { done(false); } } return; }
+  if (cl) { const a = listItem(cl.dataset.copyline); if (a && a.claude_md_line) { const done = (ok) => { cl.classList.toggle('done', ok); cl.title = ok ? 'Copied' : 'Copy failed'; setTimeout(() => { cl.classList.remove('done'); cl.title = 'Copy line for CLAUDE.md'; }, 1500); }; try { navigator.clipboard.writeText(a.claude_md_line).then(() => done(true), () => done(false)); } catch (err) { done(false); } } return; }
   const tg = e.target.closest('[data-toggle-temp]');
   if (tg) { S.includeTemp = !S.includeTemp; try { localStorage.setItem('scorer-include-temp', S.includeTemp ? '1' : '0'); } catch (err) { /* ignore */ } S.selSession = null; render(); return; }
   const rg = e.target.closest('[data-range]'); if (rg) { S.trendRange = +rg.dataset.range; render(); return; }
@@ -1244,6 +1272,7 @@ function setAsk(open) {
   if (open) setTimeout(() => $('#input').focus({ preventScroll: true }), 320);
 }
 $('#askbtn').addEventListener('click', () => setAsk(!$('#ask').classList.contains('open')));
+$('#askclose').addEventListener('click', () => setAsk(false));
 $('#ask').addEventListener('transitionend', (e) => { if (e.propertyName === 'width') drawTimeline(); });
 
 /* ================= Ask scorer (chat) ================= */
@@ -1270,25 +1299,28 @@ function stepLabels(name, input) {
 }
 
 /* tiny safe markdown: escape first, then paragraphs, lists, headings, bold, code, [n] pills */
-function inlineMd(s) {
+function inlineMd(s, cites) {
   const codes = [];
   s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/\[(\d{1,3})\](?!\()/g, '<button type="button" class="cite" data-cite="$1">$1</button>');
+  s = s.replace(/\[(\d{1,4})\](?!\()/g, (_, n) => {
+    const ok = !cites || Object.prototype.hasOwnProperty.call(cites, n);
+    return `<button type="button" class="cite${ok ? '' : ' bad'}" data-cite="${n}" title="${ok ? 'Open the source' : 'No tool result gave this number'}">${n}</button>`;
+  });
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
 }
-function md(src) {
+function md(src, cites) {
   const lines = esc(src).split('\n');
   const out = []; let para = [], list = null, fence = null;
-  const flushP = () => { if (para.length) { out.push(`<p>${inlineMd(para.join(' '))}</p>`); para = []; } };
-  const flushL = () => { if (list) { out.push(`<${list.t}>${list.items.map((x) => `<li>${inlineMd(x)}</li>`).join('')}</${list.t}>`); list = null; } };
+  const flushP = () => { if (para.length) { out.push(`<p>${inlineMd(para.join(' '), cites)}</p>`); para = []; } };
+  const flushL = () => { if (list) { out.push(`<${list.t}>${list.items.map((x) => `<li>${inlineMd(x, cites)}</li>`).join('')}</${list.t}>`); list = null; } };
   for (const raw of lines) {
     if (fence) { if (/^\s*```/.test(raw)) { out.push(`<pre><code>${fence.join('\n')}</code></pre>`); fence = null; } else fence.push(raw); continue; }
     if (/^\s*```/.test(raw)) { flushP(); flushL(); fence = []; continue; }
     const li = raw.match(/^\s*(?:[-*]|(\d+)\.)\s+(.*)$/);
     if (li) { flushP(); const t = li[1] ? 'ol' : 'ul'; if (!list || list.t !== t) { flushL(); list = { t, items: [] }; } list.items.push(li[2]); continue; }
     const h = raw.match(/^\s*#{1,6}\s+(.*)$/);
-    if (h) { flushP(); flushL(); out.push(`<h4>${inlineMd(h[1])}</h4>`); continue; }
+    if (h) { flushP(); flushL(); out.push(`<h4>${inlineMd(h[1], cites)}</h4>`); continue; }
     if (!raw.trim()) { flushP(); flushL(); continue; }
     if (list && /^\s{2,}/.test(raw)) { list.items[list.items.length - 1] += ' ' + raw.trim(); continue; }
     flushL(); para.push(raw.trim());
@@ -1298,24 +1330,35 @@ function md(src) {
   return out.join('');
 }
 
+function stepItem(m, s) {
+  const kids = m.steps.filter((c) => c.parent === s.id);
+  const state = !s.done ? 'run' : s.ok === false ? 'fail' : 'ok';
+  const ico = state === 'run' ? '<span class="spin" aria-hidden="true"></span>' : icon(state === 'fail' ? 'alert' : 'check');
+  const meta = s.agent ? `subagent${s.task ? ` · task: ${s.task}` : ''}` : s.name;
+  const inp = !s.sql && s.input && typeof s.input === 'object' && Object.keys(s.input).length ? JSON.stringify(s.input, null, 2) : '';
+  return `<li class="${s.parent ? 'nested' : ''}${s.agent ? ' sub' : ''}"><span class="ico ${state === 'fail' ? 'fail' : ''}">${ico}</span>
+      <span class="lab">${esc(s.done ? s.doneLabel : s.active)}<small><span class="tn">${esc(meta)}</span>${s.summary ? ` · ${esc(s.summary)}` : ''}</small>${s.sql ? `<details class="sqlq"><summary>show query</summary><pre><code>${esc(s.sql)}</code></pre></details>` : ''}${inp ? `<details class="sqlq"><summary>show input</summary><pre><code>${esc(inp)}</code></pre></details>` : ''}
+      ${kids.length ? `<ol class="steps kids">${kids.map((k) => stepItem(m, k)).join('')}</ol>` : ''}</span></li>`;
+}
 function stepsHTML(m, live) {
   const steps = m.steps;
-  const active = live ? steps.find((s) => !s.done) : null;
-  if (live && (active || !m.text)) {
-    let label = active ? active.active : 'Thinking';
-    const parent = active && active.parent ? steps.find((s) => s.id === active.parent) : null;
-    if (parent) label = `${parent.agent}: ${label}`;
-    return `<div><span class="shimmer">${esc(label.replace(/(\.\.\.|…)\s*$/, ''))}</span></div>`;
+  let shim = '';
+  if (live) {
+    const active = [...steps].reverse().find((s) => !s.done);
+    if (active || !m.text) {
+      let label = active ? active.active : 'Thinking';
+      const parent = active && active.parent ? steps.find((s) => s.id === active.parent) : null;
+      if (parent) label = `${parent.agent || parent.name}: ${label}`;
+      shim = `<div><span class="shimmer">${esc(label.replace(/(\.\.\.|…)\s*$/, ''))}</span></div>`;
+    }
   }
-  const done = steps.filter((s) => s.done && !s.parent);
-  if (!done.length) return '';
+  if (!steps.length) return shim;
   const n = steps.filter((s) => s.done).length;
-  const li = (s, nested) => `<li class="${nested ? 'nested' : ''}"><span class="ico${s.ok === false ? ' fail' : ''}">${icon(s.ok === false ? 'alert' : 'check')}</span>
-      <span class="lab">${esc(s.doneLabel)}<small><span class="tn">${s.agent ? 'subagent · ' : ''}${esc(s.agent ? (steps.filter((c) => c.parent === s.id).map((c) => c.name).join(' · ') || s.name) : s.name)}</span>${s.summary ? ` · ${esc(s.summary)}` : ''}</small>${s.sql ? `<details class="sqlq"><summary>show query</summary><pre><code>${esc(s.sql)}</code></pre></details>` : ''}</span></li>`;
-  const items = done.map((s) => li(s, false) + steps.filter((c) => c.parent === s.id && c.done).map((c) => li(c, true)).join('')).join('');
-  return `<div><button type="button" class="steps-toggle" aria-expanded="${m.open ? 'true' : 'false'}" data-steps="${m.id}">
-      <span>${n} step${n === 1 ? '' : 's'} completed</span>${icon('chev')}</button>
-      ${m.open ? `<ol class="steps">${items}</ol>` : ''}</div>`;
+  const top = steps.filter((s) => !s.parent || !steps.some((p) => p.id === s.parent));
+  const head = live && n < steps.length ? `${n} of ${steps.length} steps` : `${n} step${n === 1 ? '' : 's'} completed`;
+  return `${shim}<div><button type="button" class="steps-toggle" aria-expanded="${m.open ? 'true' : 'false'}" data-steps="${m.id}">
+      <span>${head}</span>${icon('chev')}</button>
+      ${m.open ? `<ol class="steps">${top.map((s) => stepItem(m, s)).join('')}</ol>` : ''}</div>`;
 }
 
 function messageHTML(m, i) {
@@ -1324,15 +1367,16 @@ function messageHTML(m, i) {
   const card = (m.cards || []).filter((k) => k.cites.length).map((k) => `<div class="sources"><div class="sh"><span class="mono">${esc(k.name)}${k.summary ? ` · ${esc(k.summary)}` : ''}</span><span class="ct">${k.cites.length > 3 ? `3 of ${k.cites.length}` : k.cites.length} row${k.cites.length === 1 ? '' : 's'}</span></div>
       ${k.cites.slice(0, 3).map((c) => `<button type="button" data-peek="${c.n}"><span class="sn">[${c.n}]</span><span class="sl">${c.turn_id != null ? `<span class="mono">#${c.turn_id}</span> ` : ''}${esc(c.label || '')}</span></button>`).join('')}</div>`).join('');
   return `<div class="msg assistant" data-mi="${i}">${stepsHTML(m, live)}${card}
-    ${m.text ? `<div class="md">${md(m.text)}</div>` : ''}
-    ${m.error ? `<div class="errline">${esc(m.error)}</div>` : ''}
+    ${m.text ? `<div class="md">${md(m.text, m.cites)}</div>` : ''}
+    ${(m.errors || []).map((x) => `<div class="errline">${esc(x)}</div>`).join('')}
+    ${!live && m.foot ? `<div class="chat-foot">${esc(m.foot)}</div>` : ''}
     ${!live && i === chat.messages.length - 1 && (m.suggestions || []).length ? `<div class="quick" role="group" aria-label="Suggested follow-ups">${m.suggestions.map((q, k) => `<button type="button" data-quick="${k}" title="${esc(q.prompt)}">${esc(q.label || q.prompt)}</button>`).join('')}</div>` : ''}</div>`;
 }
 
 function emptyHTML() {
   return `<div class="empty-chat">
       <div class="icon-tile">${icon('chart')}</div>
-      <div><span class="t">Ask scorer</span><span class="s">Questions about your day, answered from the scorer database with links to the turns behind each claim.</span></div>
+      <div><span class="t">Ask scorer</span><span class="s">Questions about your sessions, answered from scorer.db with the turns cited.</span></div>
       <div class="suggest">${SUGGESTIONS.map((s) => `<button type="button" data-suggest="${esc(s)}" ${chat.available ? '' : 'disabled'}>${esc(s)}</button>`).join('')}</div>
     </div>${chat.available ? '' : `<div class="nokey">The analyst is unavailable: ${esc(chat.reason || 'no API key set')}. Set <span class="mono">ANTHROPIC_API_KEY</span> and restart <span class="mono">scorer serve</span>.</div>`}`;
 }
@@ -1374,7 +1418,8 @@ async function send(text) {
   if (!text || chat.streaming || !chat.available) return;
   input.value = ''; autoGrow();
   chat.messages.push({ role: 'user', content: text });
-  const m = { role: 'assistant', id: ++msgSeq, text: '', steps: [], cites: {}, error: null, open: false };
+  const m = { role: 'assistant', id: ++msgSeq, text: '', steps: [], cites: {}, errors: [], open: false, done: null };
+  const t0 = performance.now();
   const history = chat.messages.filter((x) => x.role === 'user' || x.text).map((x) => ({ role: x.role, content: x.role === 'user' ? x.content : x.text }));
   chat.messages.push(m);
   chat.streaming = true; chat.ctrl = new AbortController();
@@ -1396,10 +1441,13 @@ async function send(text) {
       }
     }
   } catch (e) {
-    if (e.name !== 'AbortError') m.error = e.message || 'Something went wrong.';
-    else if (!m.text) m.error = 'Stopped.';
+    m.errors.push(e.name === 'AbortError' ? 'Stopped.' : (e.message || 'Something went wrong.'));
   } finally {
-    m.steps.forEach((s) => { if (!s.done) { s.done = true; s.ok = s.ok !== false && !chat.ctrl.signal.aborted ? s.ok : s.ok; } });
+    const aborted = chat.ctrl.signal.aborted;
+    m.steps.forEach((s) => { if (!s.done) { s.done = true; if (aborted) s.ok = false; } });
+    const nc = Object.keys(m.cites).length, dn = m.done;
+    m.foot = [dn ? [dn.backend, dn.model].filter(Boolean).join(' · ') : 'no done event',
+      `${((performance.now() - t0) / 1000).toFixed(1)} s`, `${nc} citation${nc === 1 ? '' : 's'}`].join(' · ');
     chat.streaming = false; chat.ctrl = null;
     renderChat(true);
   }
@@ -1411,13 +1459,15 @@ function onEvent(m, ev) {
     case 'text-delta': m.text += ev.delta || ''; break;
     case 'tool-start': {
       const [a, d] = stepLabels(ev.name, ev.input);
-      const sub = ev.parent_id || ev.subagent_id ? m.steps.find((s) => s.id === (ev.parent_id || ev.subagent_id)) : openSub();
-      m.steps.push({ id: ev.id || `t${m.steps.length}`, name: ev.name, active: a, doneLabel: d, done: false, parent: sub ? sub.id : null, sql: ev.sql_full || null });
+      const pid = ev.parent_id || ev.subagent_id;
+      // sub-agent tools name their delegation; the analyst's own tools stay top-level; else nest under the open one
+      const sub = pid ? m.steps.find((s) => s.id === pid) : ev.agent === 'analyst' ? null : openSub();
+      m.steps.push({ id: ev.id || `t${m.steps.length}`, name: ev.name, active: a, doneLabel: d, done: false, parent: sub ? sub.id : null, sql: ev.sql_full || null, input: ev.input || null });
       break;
     }
     case 'tool-result': {
       const s = m.steps.find((x) => x.id === ev.id) || [...m.steps].reverse().find((x) => !x.done && x.name === ev.name);
-      if (s) { s.done = true; s.ok = ev.ok !== false; s.summary = ev.summary || ''; }
+      if (s) { s.done = true; s.ok = ev.ok !== false; s.summary = (ev.summary || '') + ((ev.citations || []).length ? ` · cites ${ev.citations.map((c) => c.n).join(', ')}` : ''); }
       for (const c of ev.citations || []) m.cites[c.n] = c;
       if ((ev.citations || []).length) (m.cards = m.cards || []).push({ name: ev.name, summary: ev.summary || '', cites: ev.citations });
       break;
@@ -1425,19 +1475,25 @@ function onEvent(m, ev) {
     case 'subagent-start': {
       const agent = ev.name || ev.agent || 'subagent';
       const task = ev.task || ev.summary || (ev.input && (ev.input.task || ev.input.question)) || '';
-      m.steps.push({ id: ev.id || `s${m.steps.length}`, agent, name: agent, active: `${agent}: ${task || 'working'}`, doneLabel: `${agent}: ${task || 'done'}`, done: false, parent: null });
+      const par = ev.parent_id ? m.steps.find((s) => s.id === ev.parent_id) : openSub();
+      m.steps.push({ id: ev.id || `s${m.steps.length}`, agent, name: agent, task, active: `${agent}: working`, doneLabel: `${agent}: done`, done: false, parent: par ? par.id : null });
       break;
     }
     case 'subagent-result': {
       const s = m.steps.find((x) => x.id === ev.id) || openSub();
-      if (s) { s.done = true; s.ok = ev.ok !== false; s.summary = ev.summary || ''; m.steps.filter((c) => c.parent === s.id && !c.done).forEach((c) => { c.done = true; }); }
+      if (s) {
+        const failed = ev.ok === false || /^failed:/.test(ev.summary || '');
+        s.done = true; s.ok = !failed; s.doneLabel = `${s.agent}: ${failed ? 'failed' : 'done'}`;
+        s.summary = ev.summary ? `brief: ${ev.summary}` : '';
+        m.steps.filter((c) => c.parent === s.id && !c.done).forEach((c) => { c.done = true; });
+      }
       for (const c of ev.citations || []) m.cites[c.n] = c;
       if ((ev.citations || []).length) (m.cards = m.cards || []).push({ name: ev.name || 'subagent', summary: ev.summary || '', cites: ev.citations });
       break;
     }
     case 'suggestions': m.suggestions = (ev.items || []).filter((x) => x && x.prompt).slice(0, 4); break;
-    case 'error': m.error = ev.message || 'The analyst hit an error.'; break;
-    case 'done': break;
+    case 'error': m.errors.push(ev.message || 'The analyst hit an error.'); break;
+    case 'done': m.done = ev; break;
     default: return;
   }
   renderChat();
@@ -1455,7 +1511,12 @@ $('#log').addEventListener('click', (e) => {
   if (c) {
     const mi = +c.closest('[data-mi]').dataset.mi;
     const cite = chat.messages[mi].cites[c.dataset.cite];
-    if (cite) openPeek(cite);
+    if (cite) { openPeek(cite); return; }
+    const nx = c.nextElementSibling;
+    if (nx && nx.classList.contains('cite-label')) { nx.remove(); return; }
+    const lab = document.createElement('span');
+    lab.className = 'cite-label'; lab.textContent = `[${c.dataset.cite}] not found in any tool result`;
+    c.after(lab);
   }
 });
 
@@ -1504,15 +1565,19 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#peek
   syncThemeIcon();
   S.tab = readHash();
   if (!location.hash) history.replaceState(null, '', `${location.pathname}${location.search}#/today`);
-  setAsk(window.innerWidth >= 1440);
+  setAsk(window.innerWidth >= 1280);
   try {
     const st = await api('/api/chat/status');
     chat.available = !!st.available; chat.reason = st.reason; chat.model = st.model;
+    if (st.model) { $('#askmodel').textContent = st.model; $('#askmodel').hidden = false; }
   } catch (e) { chat.available = false; chat.reason = 'status endpoint unreachable'; }
   renderChat(true);
   try {
     const r = await api('/api/days');
     S.days = r.days; S.today = r.today;
+    const dm = r.demo || {};
+    S.demoIds = new Set(dm.session_ids || []);
+    $('#demochip').hidden = !dm.present;
     const want = new URLSearchParams(location.search).get('day');
     S.day = (want && r.days.some((x) => x.day === want)) ? want : (r.days[0] && r.days[0].day);
     $('#day').innerHTML = r.days.map((x) => `<option value="${x.day}">${esc(dayLabel(x.day, { weekday: 'short', day: 'numeric', month: 'short' }))} · ${x.turns} turns</option>`).join('');

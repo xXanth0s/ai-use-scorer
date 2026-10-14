@@ -26,11 +26,12 @@ JSON endpoints (all GET, ``Cache-Control: no-store``)
 -----------------------------------------------------
 /api/days
     {"run_id": int|null, "today": "YYYY-MM-DD",
-     "days": [{"day", "turns", "sessions"}]}            newest first, local tz
+     "days": [{"day", "turns", "sessions"}],             newest first, local tz
+     "demo": {"present": bool, "session_ids": [str]}}   # session id 'demo-*' or event kind='demo_marker'
 /api/day/<YYYY-MM-DD|today>[?include_temp=1]
     {"day", "run_id", "start", "end",                     # day bounds, ISO UTC
      "include_temp": bool, "temp_hidden": int,           # sessions hidden by the temp filter
-     "sessions": [{"id", "short", "agent", "repo", "branch", "cwd", "temp", "parent_id",
+     "sessions": [{"id", "short", "agent", "repo", "branch", "cwd", "temp", "demo", "parent_id",
          "active_s", "cost_usd", "tokens": {"in", "cached", "out"},
          "models": [{"model", "calls", "tokens", "cost_usd"}],
          "subagents": {"count", "tokens", "cost_usd"},
@@ -92,7 +93,8 @@ JSON endpoints (all GET, ``Cache-Control: no-store``)
     404 no such session/turn or no API key; 502 on an API failure.
 /api/actions?day=YYYY-MM-DD
     {"day", "available": bool, "items": [{"text" (<=160), "category", "count", "turn_ids", "example_quote" (<=80),
-     "claude_md_line" (<=160)|null, "uncalibrated", "source": "judge"|"metrics"}], "error"?}
+     "claude_md_line" (<=160)|null, "uncalibrated", "source": "judge"|"metrics",
+     "episode"?: good_spec|verification_catch|early_redirect|scoped_turn|knew_when_not_to_delegate}], "error"?}
     from judge.action_items(conn, day); available=false (empty items) until that function exists.
 /api/strengths?day=YYYY-MM-DD
     same shape as /api/actions, from judge.strengths(conn, day): what the human did well.
@@ -349,6 +351,25 @@ def _turn_end(conn, t) -> tuple[datetime, bool]:
     return max(best, parse_ts(t["prompt_at"]) + timedelta(seconds=30)), True
 
 
+DEMO_PREFIX = "demo-"
+DEMO_MAX_IDS = 50
+
+
+def demo_session_ids(conn) -> set[str]:
+    """Sessions that are demo/seed data: id starts with 'demo-' or an event row kind='demo_marker'."""
+    ids = {r[0] for r in conn.execute("SELECT id FROM session WHERE id LIKE 'demo-%'")}
+    ids |= {r[0] for r in conn.execute(
+        "SELECT DISTINCT session_id FROM event WHERE kind='demo_marker' AND session_id IS NOT NULL")}
+    return ids
+
+
+def demo_info(conn) -> dict:
+    """{"present": bool, "session_ids": [...]} (ids only, capped) -- drives the 'includes demo data' chip."""
+    ids = demo_session_ids(conn)
+    marker = conn.execute("SELECT 1 FROM event WHERE kind='demo_marker' LIMIT 1").fetchone() is not None
+    return {"present": bool(ids) or marker, "session_ids": [clip(i, 80) for i in sorted(ids)[:DEMO_MAX_IDS]]}
+
+
 def list_days(conn) -> dict:
     counts: dict[str, dict] = {}
     for r in conn.execute("SELECT session_id, prompt_at FROM turn WHERE prompt_at IS NOT NULL"):
@@ -360,7 +381,8 @@ def list_days(conn) -> dict:
         c["sessions"].add(r["session_id"])
     days = [{"day": d, "turns": c["turns"], "sessions": len(c["sessions"])}
             for d, c in sorted(counts.items(), reverse=True)]
-    return {"run_id": dbm.latest_run_id(conn), "today": local_day(datetime.now(timezone.utc)), "days": days}
+    return {"run_id": dbm.latest_run_id(conn), "today": local_day(datetime.now(timezone.utc)), "days": days,
+            "demo": demo_info(conn)}
 
 
 def _day_turns(conn, day):
@@ -567,6 +589,7 @@ def day_payload(conn, day, include_temp: bool = False) -> dict:
     temp_ids = {t["session_id"] for t, *_ in turns if is_temp(t["cwd"])}
     hidden = set() if include_temp else temp_ids
     turns = [x for x in turns if x[0]["session_id"] not in hidden]
+    demo_ids = demo_session_ids(conn)
     sessions: dict[str, dict] = {}
     by_s = defaultdict(list)
     for t, s, e, open_ in turns:
@@ -576,7 +599,7 @@ def day_payload(conn, day, include_temp: bool = False) -> dict:
             sess = sessions[sid] = {"id": sid, "short": sid[:8], "agent": t["agent"],
                                     "repo": _basename(t["repo"] or t["cwd"]), "branch": clip(t["branch"], 40),
                                     "cwd": lclip(t["cwd"]), "temp": sid in temp_ids,
-                                    "turns": [], "interrupts": []}
+                                    "demo": sid in demo_ids, "turns": [], "interrupts": []}
         cs, ce = max(s, start), min(e, end)
         by_s[sid].append((cs, ce))
         sess["turns"].append({"id": t["id"], "idx": t["idx"], "start": iso(cs), "end": iso(ce), "open": open_,
@@ -1156,6 +1179,9 @@ def sanitize_action(it) -> dict | None:
            "claude_md_line": clip(it.get("claude_md_line"), 160) or None,
            "uncalibrated": bool(it.get("uncalibrated")),
            "source": it.get("source") if it.get("source") in ACTION_SOURCES else "metrics"}
+    ep = it.get("episode")
+    if isinstance(ep, str) and re.fullmatch(r"[a-z_]{1,40}", ep):   # judge v3 positive-episode label
+        out["episode"] = ep
     return out
 
 
@@ -1675,7 +1701,10 @@ def make_server(db: str | None, port: int, host: str = "127.0.0.1") -> Threading
 
 
 def serve(db: str | None, port: int) -> None:
+    if db:  # same contract as SCORER_DB: everything in this process (agent tools, cache) uses this file
+        os.environ["SCORER_DB"] = str(Path(db).expanduser().resolve())
     srv = make_server(db, port)
+    print(f"scorer db: {dbm.db_path() if not db else os.environ['SCORER_DB']}")
     print(f"scorer dashboard: http://127.0.0.1:{srv.server_address[1]}/  (Ctrl-C to stop)")
     try:
         srv.serve_forever()
