@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "env": {
+    "HDYAI_HOSTED": "1",
+    "HDYAI_ANALYSIS_URL": "https://how-do-you-ai-analysis.vercel.app"
+  },
+  "buildCommand": "npm run build"
+}

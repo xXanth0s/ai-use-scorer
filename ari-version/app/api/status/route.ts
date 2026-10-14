@@ -1,0 +1,4 @@
+import { hostedApi } from '@/lib/hosted';
+import { getState } from '@/lib/db';
+import { assertLocal, failure } from '@/lib/http';
+export async function GET(request:Request) {try{const hosted=await hostedApi(request);if(hosted)return hosted;assertLocal(request);return Response.json({collector:getState('collector')});}catch(e){return failure(e);}}
