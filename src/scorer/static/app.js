@@ -36,6 +36,8 @@ function median(xs) {
   const m = v.length >> 1;
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
+const UNCAL = '<span class="chip-uncal" tabindex="0" title="Judge not yet calibrated (κ on 50 double-labelled turns pending)">uncalibrated</span>';
+const ltrunc = (txt, full) => `<span class="ltrunc" title="${esc(full || txt)}"><bdi>${esc(txt)}</bdi></span>`;
 const pretty = (s) => String(s).replace(/^(cause|event|detection):/, '').replace(/[_:]/g, ' ');
 
 async function api(path) {
@@ -53,9 +55,10 @@ async function pool(items, n, fn) {
 }
 
 /* ---------------- state + caches ---------------- */
-const S = { days: [], today: null, day: null, tab: 'today', selTurn: null, trendRange: 14 };
+const S = { days: [], today: null, day: null, tab: 'today', selTurn: null, trendRange: 14, includeTemp: false };
+try { S.includeTemp = localStorage.getItem('scorer-include-temp') === '1'; } catch (e) { /* private mode */ }
 const cache = { day: new Map(), turn: new Map(), trend: new Map() };
-const getDay = (d) => { if (!cache.day.has(d)) cache.day.set(d, api(`/api/day/${d}`).catch((e) => { cache.day.delete(d); throw e; })); return cache.day.get(d); };
+const getDay = (d) => { const k = `${d}|${S.includeTemp ? 1 : 0}`; if (!cache.day.has(k)) cache.day.set(k, api(`/api/day/${d}${S.includeTemp ? '?include_temp=1' : ''}`).catch((e) => { cache.day.delete(k); throw e; })); return cache.day.get(k); };
 const getTurn = (id) => { if (!cache.turn.has(id)) cache.turn.set(id, api(`/api/turn/${id}`).catch((e) => { cache.turn.delete(id); throw e; })); return cache.turn.get(id); };
 const getTrend = (end, n) => { const k = `${end}/${n}`; if (!cache.trend.has(k)) cache.trend.set(k, api(`/api/trend?end=${end}&days=${n}`)); return cache.trend.get(k); };
 
@@ -207,7 +210,7 @@ async function optional(path) {
   } catch (e) { return null; }
 }
 cache.report = new Map(); cache.narr = new Map(); cache.summary = new Map();
-const getReport = (d) => { if (!cache.report.has(d)) cache.report.set(d, optional(`/api/report/${d}`)); return cache.report.get(d); };
+const getReport = (d) => { const k = `${d}|${S.includeTemp ? 1 : 0}`; if (!cache.report.has(k)) cache.report.set(k, optional(`/api/report/${d}${S.includeTemp ? '?include_temp=1' : ''}`)); return cache.report.get(k); };
 const getNarrative = (d) => { if (!cache.narr.has(d)) cache.narr.set(d, optional(`/api/narrative?day=${d}`)); return cache.narr.get(d); };
 
 const turnSession = (d, tid) => d.sessions.find((s) => s.turns.some((t) => t.id === tid));
@@ -266,9 +269,14 @@ function deltaHTML(today, base, unit, lowerBetter) {
   const fmt = (v) => (unit === '%' ? `${Math.round(v * 100)}%` : `${num(v)}${unit ? ` ${unit}` : ''}`);
   if (Math.abs(diff) < 1e-9) return `<span>same as the 7-day median</span>`;
   const worse = lowerBetter ? diff > 0 : diff < 0;
-  const sign = diff > 0 ? '+' : '−';
-  const mag = unit === '%' ? `${Math.round(Math.abs(diff) * 100)} pts` : `${num(Math.abs(diff))}${unit ? ` ${unit}` : ''}`;
-  return `<span class="${worse ? 'worse' : 'better'}">${sign}${mag}</span> · median ${fmt(base)}`;
+  const mag = unit === '%' ? `${Math.round(Math.abs(diff) * 100)} points` : `${num(Math.abs(diff))}${unit ? ` ${unit}` : ''}`;
+  return `<span class="${worse ? 'worse' : 'better'}">${mag} ${diff > 0 ? 'more' : 'less'}</span> than the 7-day median (${fmt(base)})`;
+}
+/* V in plain words: "37% unverified · 7-day median 100%" */
+function unverifiedDeltaHTML(unvShare, unvBase) {
+  if (!isNum(unvShare)) return 'no edits';
+  const worse = isNum(unvBase) && unvShare > unvBase + 1e-9, better = isNum(unvBase) && unvShare < unvBase - 1e-9;
+  return `<span class="${worse ? 'worse' : better ? 'better' : ''}">${pct(unvShare)} unverified</span> · ${isNum(unvBase) ? `7-day median ${pct(unvBase)}` : 'no 7-day median yet'}`;
 }
 
 VIEWS_today = async function () {
@@ -285,13 +293,13 @@ VIEWS_today = async function () {
   const band = `<div class="band">
     <div class="stat"><span class="k">Unverified edits</span>
       <span class="v">${unvN != null ? unvN : '—'}${V ? `<small>of ${V.n} batches</small>` : ''}</span>
-      <span class="d">${V ? deltaHTML(1 - V.value, unvBase, '%', true) : 'no edits'}</span>
+      <span class="d">${V ? unverifiedDeltaHTML(1 - V.value, unvBase) : 'no edits'}</span>
       ${V ? evidenceLinks(V.evidence.filter((e) => /^unverified/.test(e.note || '')), 2) : ''}</div>
     <div class="stat"><span class="k">Blocked</span>
       <span class="v">${B ? num(B.value) : '0'}<small>min</small></span>
       <span class="d">${deltaHTML(B ? B.value : 0, base.B_min.base, 'min', true)}</span>
       ${B ? evidenceLinks(B.evidence, 2) : ''}</div>
-    <div class="stat"><span class="k">Corrections</span>
+    <div class="stat"><span class="k">Corrections ${UNCAL}</span>
       <span class="v">${isNum(cTotal) ? `${num(cTotal)}<small>turns</small>` : '—<small>judge pending</small>'}</span>
       <span class="d">${isNum(cTotal) ? deltaHTML(cTotal, base.C.base, '', true) : 'run <span class="code">scorer judge</span>'}</span>
       ${causes.length ? evidenceLinks(causes.flatMap((c) => c.evidence || []), 2) : ''}</div>
@@ -306,9 +314,10 @@ VIEWS_today = async function () {
   const rightNow = un.length ? `<ul class="plain">${un.map((u) => {
     const s = d.sessions.find((x) => x.id === u.session_id);
     const files = (u.files || []).map((p) => String(p).replace(/\/+$/, '').split('/').slice(-2).join('/'));
-    return `<li><strong style="font-weight:600">${esc(s ? worktreeOf(s).label : sid8(u.session_id))}</strong>${s && branchTxt(s.branch) ? ` <span class="muted">${esc(s.branch)}</span>` : ''}
+    const wl = s ? worktreeOf(s).label : sid8(u.session_id);
+    return `<li><strong style="font-weight:600;max-width:60%" class="trunc" title="${esc((s && s.cwd) || wl)}">${esc(wl)}</strong>${s && branchTxt(s.branch) ? ` <span class="muted">${esc(s.branch)}</span>` : ''}
       ${turnLinks([u.turn_id])} ${tierBadge(u.tier)}
-      <div class="sub-note"><span class="code">${esc(files.join(', ') || 'files unknown')}</span>${u.command ? ` · run <code class="cmd">${esc(u.command)}</code>` : ''}</div></li>`;
+      <div class="sub-note" style="display:flex;gap:4px;min-width:0;align-items:baseline"><span class="code" style="min-width:0;max-width:100%">${ltrunc(files.join(', ') || 'files unknown', [u.manifest_dir, (u.files || []).join(', ')].filter(Boolean).join(' · '))}</span>${u.command ? ` · run <code class="cmd">${esc(u.command)}</code>` : ''}</div></li>`;
   }).join('')}</ul>` : '<p class="sub-note">Every session ended on a verified edit.</p>';
 
   // corrections by cause
@@ -361,6 +370,7 @@ VIEWS_today = async function () {
     <div class="panel-head"><h2>Day by worktree</h2>
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
         <div class="legend"><span><i class="dot claude"></i>Claude</span><span><i class="dot codex"></i>Codex</span><span><i class="ov"></i>Two or more at once</span><span><i class="tk"></i>Interruption</span></div>
+        ${d.temp_hidden || S.includeTemp ? `<button type="button" class="btn outline sm" data-toggle-temp aria-pressed="${S.includeTemp ? 'true' : 'false'}">${S.includeTemp ? 'Hide test/temp sessions' : `Show test/temp sessions (${d.temp_hidden})`}</button>` : ''}
         <button type="button" class="btn outline sm" id="tl-expand" aria-pressed="${S.tlExpanded ? 'true' : 'false'}">${S.tlExpanded ? 'Group by worktree' : 'Show sessions'}</button></div></div>
     <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
     <div id="turn-detail"></div>
@@ -369,7 +379,7 @@ VIEWS_today = async function () {
   <section class="grid2">
     <div class="colstack">
       <div class="panel"><div class="panel-head"><h2>Right now: unverified</h2><span class="note">${un.some((u) => u.command) ? 'run before you push' : 'run the tests before you push'}</span></div>${rightNow}</div>
-      <div class="panel"><div class="panel-head"><h2>Corrections by cause</h2><span class="note">${causes.map((c) => `${esc(pretty(c.metric.slice(8)))} ${num(c.value)}`).join(' · ')}</span></div>${corr}</div>
+      <div class="panel"><div class="panel-head"><h2>Corrections by cause ${UNCAL}</h2><span class="note">${causes.map((c) => `${esc(pretty(c.metric.slice(8)))} ${num(c.value)}`).join(' · ')}</span></div>${corr}</div>
     </div>
     <div class="colstack">
       <div class="panel"><div class="panel-head"><h2>Worst attention window</h2><span class="note">${B ? `${num(B.value)} min blocked today` : ''}</span></div>${worst}</div>
@@ -382,8 +392,41 @@ VIEWS_today = async function () {
   <section class="panel">
     <div class="panel-head"><h2>Diagnostics</h2><span class="note">context for the numbers, not scored</span></div>
     ${diag}
+  </section>
+
+  <section class="panel" id="actions" aria-labelledby="actions-h">
+    <div class="panel-head"><h2 id="actions-h">Action items</h2><span class="note">what to change, with the turns behind it</span></div>
+    <div id="actions-body"><span class="shimmer" style="font-size:13px">Loading action items</span></div>
   </section>`;
 };
+
+/* ---- action items (judge.action_items via /api/actions) ---- */
+cache.actions = new Map();
+const getActions = (d) => { if (!cache.actions.has(d)) cache.actions.set(d, optional(`/api/actions?day=${d}`)); return cache.actions.get(d); };
+let actionItems = [];
+function actionsHTML(r) {
+  const items = (r && r.items) || [];
+  if (!items.length) {
+    return `<p class="sub-note">${r && r.available === false ? 'Action items appear here once the judge provides them (<code class="cmd">scorer judge</code>).' : r && r.error ? 'Could not compute action items for this day.' : 'No action items for this day.'}</p>`;
+  }
+  return `<ol class="actions">${items.map((a, i) => `<li>
+      <span class="an" aria-hidden="true">${i + 1}</span>
+      <div class="ab">
+        <div class="at">${esc(a.text)}</div>
+        <div class="am">${a.category ? `<span class="badge tag">${esc(pretty(a.category))}</span>` : ''}${a.count ? `<span class="muted">${num(a.count)}×</span>` : ''}${a.uncalibrated || a.source === 'judge' ? UNCAL : ''}${turnLinks(a.turn_ids)}
+          <button type="button" class="linkbtn" data-askwhy="${i}">${icon('spark')}Ask why</button></div>
+        ${a.example_quote ? `<blockquote class="q">${esc(a.example_quote)}</blockquote>` : ''}
+        ${a.claude_md_line ? `<div class="mdline"><span class="lbl">CLAUDE.md</span><code class="cmd">${esc(a.claude_md_line)}</code><button type="button" class="btn outline sm" data-copyline="${i}" aria-label="Copy the CLAUDE.md line">Copy</button></div>` : ''}
+      </div></li>`).join('')}</ol>`;
+}
+async function fillActions() {
+  const day = S.day;
+  const r = await getActions(day);
+  const box = $('#actions-body');
+  if (!box || S.day !== day || S.tab !== 'today') return;
+  actionItems = (r && r.items) || [];
+  box.innerHTML = actionsHTML(r);
+}
 
 function narrativeFallbackHTML(f, loading) {
   return `<h1>${esc((f.verdict && f.verdict.text) || 'No agent activity recorded.')}</h1>
@@ -721,10 +764,9 @@ VIEWS_sessions = async function () {
   const d = await getDay(S.day);
   const ss = d.sessions.filter((s) => s.turns.length)
     .sort((a, b) => new Date(a.turns[0].start) - new Date(b.turns[0].start));
-  if (!ss.length) return `<section class="panel"><div class="panel-head"><h2>Sessions</h2></div><p class="sub-note">No turns fall inside ${esc(dayLabel(S.day))} in local time.</p></section>`;
-  const allIds = ss.flatMap((s) => s.turns.map((t) => t.id));
-  const full = await pool(allIds, 8, (id) => getTurn(id).catch(() => null));
-  const byId = new Map(full.filter(Boolean).map((t) => [t.id, t]));
+  const tempBtn = d.temp_hidden || S.includeTemp
+    ? `<button type="button" class="btn outline sm" data-toggle-temp aria-pressed="${S.includeTemp ? 'true' : 'false'}">${S.includeTemp ? 'Hide test/temp sessions' : `Show test/temp sessions (${d.temp_hidden})`}</button>` : '';
+  if (!ss.length) return `<section class="panel"><div class="panel-head"><h2>Sessions</h2>${tempBtn}</div><p class="sub-note">No turns fall inside ${esc(dayLabel(S.day))} in local time.</p></section>`;
   const blocked = blockedBySession(d);
   const endOf = (t) => +new Date(t.end || t.start);
   const H = 3600e3;
@@ -735,54 +777,70 @@ VIEWS_sessions = async function () {
     const bars = s.turns.map((t) => `<rect class="on ${s.agent === 'codex' ? 'codex' : 'claude'}" x="${x(+new Date(t.start)).toFixed(1)}" y="3" width="${Math.max(x(endOf(t)) - x(+new Date(t.start)), 1.5).toFixed(1)}" height="12" rx="1"/>`).join('');
     return `<svg class="mini-tl" viewBox="0 0 ${W} 18" preserveAspectRatio="none" aria-hidden="true"><rect class="base" x="0" y="8" width="${W}" height="2"/>${bars}</svg>`;
   };
-  let tot = { ok: 0, fail: 0, unv: 0, ed: 0, cost: 0 };
+  const tokTotal = (s) => (s.tokens ? s.tokens.in + s.tokens.cached + s.tokens.out : null);
+  let totCost = 0, totTok = 0, nTurns = 0;
   const rows = ss.map((s) => {
-    const ts = s.turns.map((t) => byId.get(t.id)).filter(Boolean);
-    const ok = ts.filter((t) => t.tier === 'verified_pass').length, fail = ts.filter((t) => t.tier === 'verified_fail').length;
-    const unv = ts.filter((t) => t.tier === 'none' || t.tier === 'inspected').length, ed = ok + fail + unv;
-    const cost = ts.reduce((a, t) => a + ((t.api && t.api.cost_usd) || 0), 0);
-    tot = { ok: tot.ok + ok, fail: tot.fail + fail, unv: tot.unv + unv, ed: tot.ed + ed, cost: tot.cost + cost };
+    const v = s.verification || { batches: 0, verified_pass: 0, verified_fail: 0, inspected: 0, none: 0 };
+    const ok = v.verified_pass, fail = v.verified_fail, unv = v.inspected + v.none, ed = v.batches;
+    totCost += s.cost_usd || 0; totTok += tokTotal(s) || 0; nTurns += s.turns.length;
     const wt = worktreeOf(s);
     const p = (n) => `${ed ? (100 * n) / ed : 0}%`;
-    return `<tr class="row clickable${S.selSession === s.id ? ' expanded' : ''}" data-session="${esc(s.id)}" tabindex="0">
-      <td class="clip" title="${esc(`${wt.label} ${s.branch || ''}`)}"><span style="display:inline-flex;align-items:center;gap:8px"><span class="dot ${s.agent === 'codex' ? 'codex' : 'claude'}"></span><span>${esc(wt.label)}</span></span>${branchTxt(s.branch) ? ` <span class="muted" style="font-size:13px">${esc(s.branch)}</span>` : ''}
-        <div class="muted" style="font-size:12px;padding-left:16px">${s.agent === 'codex' ? 'Codex' : 'Claude'} · ${esc(s.short)}</div></td>
+    const tt = s.tokens ? `${tok(s.tokens.in)} in · ${tok(s.tokens.cached)} cached · ${tok(s.tokens.out)} out` : '';
+    return `<tr class="row clickable${S.selSession === s.id ? ' expanded' : ''}" data-session="${esc(s.id)}" tabindex="0" aria-expanded="${S.selSession === s.id ? 'true' : 'false'}">
+      <td class="clip" title="${esc(`${s.cwd || wt.label} ${s.branch || ''}`)}"><span style="display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0"><span class="dot ${s.agent === 'codex' ? 'codex' : 'claude'}"></span><span class="trunc" title="${esc(s.cwd || wt.label)}">${esc(wt.label)}</span></span>${branchTxt(s.branch) ? ` <span class="muted" style="font-size:13px">${esc(s.branch)}</span>` : ''}
+        <div class="muted" style="font-size:12px;padding-left:16px">${s.agent === 'codex' ? 'Codex' : 'Claude'} · ${esc(s.short)}${s.parent_id ? ' · subagent thread' : ''}${s.temp ? ' · <span class="badge tag">temp</span>' : ''}</div></td>
       <td style="padding-top:16px">${mini(s)}</td>
       <td class="num">${hhmm(s.turns[0].start)}–${hhmm(s.turns[s.turns.length - 1].end)}</td>
       <td class="num">${s.turns.length}</td>
-      <td class="num">${dur(unionSeconds(s.turns))}</td>
-      <td>${ed ? `<div class="vcell" title="${ok} verified, ${fail} failed, ${unv} unverified"><div class="vbar" style="flex:1"><span class="ok" style="width:${p(ok)}"></span><span class="fail" style="width:${p(fail)}"></span><span class="unv" style="width:${p(unv)}"></span></div><span class="t">${ok}/${ed}</span></div>` : '<span class="muted" style="font-size:13px">no edits</span>'}</td>
+      <td class="num">${dur(isNum(s.active_s) ? s.active_s : unionSeconds(s.turns))}</td>
+      <td>${ed ? `<div class="vcell" title="${ok} verified, ${fail} check failed, ${unv} unverified of ${ed} edit batches"><div class="vbar" style="flex:1"><span class="ok" style="width:${p(ok)}"></span><span class="fail" style="width:${p(fail)}"></span><span class="unv" style="width:${p(unv)}"></span></div><span class="t">${ok + fail}/${ed}</span></div>` : '<span class="muted" style="font-size:13px">no edits</span>'}</td>
       <td class="num">${blocked[s.id] ? dur(blocked[s.id]) : '—'}</td>
-      <td class="num">${usd(cost)}</td></tr>`;
+      <td class="num" title="${esc(tt)}">${tok(tokTotal(s))}</td>
+      <td class="num">${usd(s.cost_usd)}</td></tr>`;
   }).join('');
-  const hours = []; for (let h = t0; h <= t1; h += H) hours.push(h);
   return `
   <section class="panel" style="padding:0;overflow:hidden">
     <div class="panel-head" style="padding:16px 20px 0"><h2>Sessions</h2>
-      <div class="legend"><span>${esc(dayLabel(S.day))} · ${ss.length} sessions · ${allIds.length} turns · ${usd(tot.cost)}</span>
-        <span><i class="sw ok"></i>Verified</span><span><i class="sw fail"></i>Check failed</span><span><i class="sw unv"></i>Unverified</span></div></div>
+      <div class="legend"><span>${esc(dayLabel(S.day))} · ${ss.length} sessions · ${nTurns} turns · ${tok(totTok)} tokens · ${usd(totCost)}</span>
+        <span><i class="sw ok"></i>Verified</span><span><i class="sw fail"></i>Check failed</span><span><i class="sw unv"></i>Unverified</span>${tempBtn}</div></div>
     <table class="sess" style="margin-top:12px">
-      <colgroup><col style="width:22%"><col style="width:21%"><col style="width:11%"><col style="width:6%"><col style="width:10%"><col style="width:13%"><col style="width:8%"><col style="width:9%"></colgroup>
-      <thead><tr><th>Worktree</th><th><div style="display:flex;justify-content:space-between;gap:8px"><span>Activity</span><span style="font-weight:400">${hhmm(new Date(t0).toISOString())}–${hhmm(new Date(t1).toISOString())}</span></div></th><th class="num">Time</th><th class="num">Turns</th><th class="num">Active</th><th>Verified turns</th><th class="num">Blocked</th><th class="num">Cost</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="8" class="muted">No sessions.</td></tr>'}</tbody></table>
+      <colgroup><col style="width:20%"><col style="width:18%"><col style="width:10%"><col style="width:5%"><col style="width:8%"><col style="width:13%"><col style="width:8%"><col style="width:9%"><col style="width:9%"></colgroup>
+      <thead><tr><th>Worktree</th><th><div style="display:flex;justify-content:space-between;gap:8px"><span>Activity</span><span style="font-weight:400">${hhmm(new Date(t0).toISOString())}–${hhmm(new Date(t1).toISOString())}</span></div></th><th class="num">Time</th><th class="num">Turns</th><th class="num">Active</th><th>Verified batches</th><th class="num">Blocked</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="9" class="muted">No sessions.</td></tr>'}</tbody></table>
   </section>
   <div id="sel-session"></div>`;
 };
 
+function sessionFactsHTML(s, d) {
+  const v = s.verification || {};
+  const t = s.tokens || {};
+  const sub = s.subagents || {};
+  const bl = blockedBySession(d)[s.id];
+  const models = (s.models || []).map((m) => `<li><span class="mono">${esc(m.model)}</span><span>${tok(m.tokens)} · ${usd(m.cost_usd)}</span></li>`).join('');
+  return `<div class="sess-facts">
+    <div><div class="k">Tokens</div><div class="v">${tok((t.in || 0) + (t.cached || 0) + (t.out || 0))}</div><div class="s">${tok(t.in)} in · ${tok(t.cached)} cached · ${tok(t.out)} out</div></div>
+    <div><div class="k">Subagents</div><div class="v">${num(sub.count || 0)}</div><div class="s">${sub.count ? `${tok(sub.tokens)} tokens · ${usd(sub.cost_usd)}` : 'none launched'}</div></div>
+    <div><div class="k">Verification</div><div class="v">${v.batches ? `${(v.verified_pass || 0) + (v.verified_fail || 0)}/${v.batches}` : '—'}</div><div class="s">${v.batches ? `${v.verified_pass} passed · ${v.verified_fail} failed · ${v.inspected} inspected · ${v.none} none` : 'no edit batches'}</div></div>
+    <div><div class="k">Interruptions</div><div class="v">${(s.interrupts || []).length}</div><div class="s">${bl ? `${dur(bl)} blocked on you` : 'never blocked on you'}</div></div>
+    <div><div class="k">Corrections</div><div class="v">${num(s.corrections || 0)}</div><div class="s">turns the judge labelled</div></div>
+    <div class="wide"><div class="k">Models</div>${models ? `<ul class="mix">${models}</ul>` : '<div class="s">no API calls recorded</div>'}</div>
+  </div>`;
+}
+
 async function selectSession(id) {
   S.selSession = S.selSession === id ? null : id;
-  document.querySelectorAll('tr[data-session]').forEach((r) => r.classList.toggle('expanded', r.dataset.session === S.selSession));
+  document.querySelectorAll('tr[data-session]').forEach((r) => { const on = r.dataset.session === S.selSession; r.classList.toggle('expanded', on); r.setAttribute('aria-expanded', String(on)); });
   const box = $('#sel-session'); if (!box) return;
   if (!S.selSession) { box.innerHTML = ''; return; }
   const d = await getDay(S.day);
   const s = d.sessions.find((x) => x.id === id);
+  if (!s) { box.innerHTML = ''; return; }
   const ts = await pool(s.turns.map((t) => t.id), 6, (tid) => getTurn(tid).catch(() => null));
   const gapAfter = {};
   for (const g of d.gaps || []) if (g.session_id === id) {
     const prev = s.turns.filter((t) => (t.end || t.start) <= g.start).pop();
     if (prev) gapAfter[prev.id] = g.seconds;
   }
-  const cost = ts.reduce((a, t) => a + ((t && t.api && t.api.cost_usd) || 0), 0);
   const wt = worktreeOf(s);
   const rows = s.turns.map((t, i) => {
     const f = ts[i] || {};
@@ -796,9 +854,10 @@ async function selectSession(id) {
   }).join('');
   box.innerHTML = `<div class="sel-session" style="margin-top:16px">
     <div class="sh2"><span class="t">${s.agent === 'codex' ? 'Codex' : 'Claude'} · ${esc(wt.label)}</span>
-      <span class="muted mono" style="font-size:12px">${esc(branchTxt(s.branch) || s.short)} · ${hhmm(s.turns[0].start)}–${hhmm(s.turns[s.turns.length - 1].end)} · ${usd(cost)}</span>
+      <span class="muted mono" style="font-size:12px">${esc(branchTxt(s.branch) || s.short)} · ${hhmm(s.turns[0].start)}–${hhmm(s.turns[s.turns.length - 1].end)} · ${usd(s.cost_usd)}</span>
       <span style="flex:1"></span><button class="btn outline sm" type="button" data-ask-session="${esc(s.id)}">${icon('spark')}Ask about this session</button></div>
-    <div class="sum" id="sel-sum">${dur(unionSeconds(s.turns))} of agent time over ${s.turns.length} turn${s.turns.length === 1 ? '' : 's'}.</div>
+    <div class="sum" id="sel-sum">${dur(isNum(s.active_s) ? s.active_s : unionSeconds(s.turns))} of agent time over ${s.turns.length} turn${s.turns.length === 1 ? '' : 's'}.</div>
+    ${sessionFactsHTML(s, d)}
     <table><thead><tr><th>Turn</th><th class="num">Start</th><th>Prompt</th><th class="num">Tools</th><th>Verification</th><th class="num">Gap after</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   if (chat.available) summaryFor(s.id, null).then((sm) => { const el = $('#sel-sum'); if (sm && sm.summary && el && S.selSession === id) el.textContent = sm.summary; });
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -812,6 +871,7 @@ async function toggleTurnRow(row) {
 }
 
 /* ================= Trends ================= */
+/* null = no data that day: drawn as a gap (no bar); 0 = a real zero: a 2px stub. */
 function barRow(series, days, fmt, curIdx, H = 44) {
   const W = 300, gap = series.length > 10 ? 2 : 6;
   const vals = series.filter(isNum);
@@ -819,63 +879,133 @@ function barRow(series, days, fmt, curIdx, H = 44) {
   const bw = (W - gap * (series.length - 1)) / series.length;
   const bars = series.map((v, i) => {
     const xx = (i * (bw + gap)).toFixed(1);
-    if (!isNum(v)) return `<rect x="${xx}" y="${H - 1}" width="${bw.toFixed(1)}" height="1" opacity=".5"><title>${days[i]}: no data</title></rect>`;
-    const h = Math.max((v / hi) * (H - 4), 1);
+    if (!isNum(v)) return `<rect class="na" x="${xx}" y="0" width="${bw.toFixed(1)}" height="${H}"><title>${days[i]}: no data</title></rect>`;
+    const h = v > 0 ? Math.max((v / hi) * (H - 4), 1.5) : 2;
     return `<rect class="${i === curIdx ? 'cur' : ''}" x="${xx}" y="${(H - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5"><title>${days[i]}: ${fmt(v)}</title></rect>`;
   }).join('');
   const med = median(series);
-  const ml = isNum(med) && med > 0 ? `<line class="med" x1="0" x2="${W}" y1="${(H - Math.max((med / hi) * (H - 4), 1)).toFixed(1)}" y2="${(H - Math.max((med / hi) * (H - 4), 1)).toFixed(1)}" vector-effect="non-scaling-stroke"/>` : '';
+  const my = isNum(med) && med > 0 ? (H - Math.max((med / hi) * (H - 4), 1)).toFixed(1) : null;
+  const ml = my ? `<line class="med" x1="0" x2="${W}" y1="${my}" y2="${my}" vector-effect="non-scaling-stroke"/>` : '';
   return `<svg class="bars" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="${H}" aria-hidden="true">${bars}${ml}</svg>`;
 }
+
+/* stacked bars: stacks = [{name, series, color}] */
+function stackRow(stacks, days, fmt, curIdx, H = 44) {
+  const n = days.length, W = 300, gap = n > 10 ? 2 : 6;
+  const tot = days.map((_, i) => (stacks.some((s) => isNum(s.series[i])) ? stacks.reduce((a, s) => a + (isNum(s.series[i]) ? s.series[i] : 0), 0) : null));
+  const hi = Math.max(...tot.filter(isNum), 0) || 1;
+  const bw = (W - gap * (n - 1)) / n;
+  const out = days.map((day, i) => {
+    const xx = (i * (bw + gap)).toFixed(1);
+    if (!isNum(tot[i])) return `<rect class="na" x="${xx}" y="0" width="${bw.toFixed(1)}" height="${H}"><title>${day}: no data</title></rect>`;
+    let y = H;
+    const tip = `${day}: ${stacks.filter((s) => s.series[i]).map((s) => `${s.name} ${fmt(s.series[i])}`).join(', ') || fmt(0)}`;
+    const segs = stacks.map((s) => {
+      const v = s.series[i];
+      if (!isNum(v) || v <= 0) return '';
+      const h = (v / hi) * (H - 4);
+      y -= h;
+      return `<rect class="seg${i === curIdx ? ' cur' : ''}" style="fill:${s.color}" x="${xx}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h, 0.5).toFixed(1)}"><title>${esc(tip)}</title></rect>`;
+    }).join('');
+    return segs || `<rect class="${i === curIdx ? 'cur' : ''}" x="${xx}" y="${H - 2}" width="${bw.toFixed(1)}" height="2"><title>${esc(tip)}</title></rect>`;
+  }).join('');
+  return `<svg class="bars" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="${H}" aria-hidden="true">${out}</svg>`;
+}
+const shade = (base, k) => `color-mix(in srgb, ${base} ${[100, 62, 38, 22, 12][k % 5]}%, transparent)`;
 
 VIEWS_trends = async function () {
   const n = S.trendRange;
   const t = await getTrend(S.day, n);
-  const have = new Set(S.days.map((x) => x.day));
-  const perDay = await pool(t.days, 4, (dd) => (have.has(dd) ? getDay(dd).catch(() => null) : null));
-  const cost = perDay.map((d) => { if (!d) return null; const c = d.diagnostics.find((x) => x.metric === 'cost_usd'); return c ? c.value : null; });
-  const causes = new Map();
-  perDay.forEach((d, i) => {
-    if (!d) return;
-    for (const c of (d.scored.C || []).filter((x) => /^C:cause:/.test(x.metric))) {
-      const k = c.metric.slice(8);
-      if (!causes.has(k)) causes.set(k, t.days.map((dd, j) => (perDay[j] ? 0 : null)));
-      causes.get(k)[i] = c.value;
-    }
-  });
+  const sr = t.series;
+  const z = (k) => sr[k] || t.days.map(() => null);
   const cur = t.days.length - 1;
   const short = (d) => dayLabel(d, { day: 'numeric', month: 'short' });
-  const mult = (nm, sub, s, f) => `<div class="mult">
-      <div class="mh"><span class="nm">${nm}</span><span class="v">${f(s[cur])}</span></div>
-      ${barRow(s, t.days, f, cur)}
-      <div class="axis"><span>${esc(short(t.days[0]))}</span><span>${esc(short(t.days[cur]))}</span></div>
-      <div class="ms">${sub}</div></div>`;
-  const main = [
-    mult('V verified edits', `Median ${pct(median(t.series.V))}. Higher is better.`, t.series.V, pct),
-    mult('B blocked', `Minutes an agent waited on you. Median ${num(median(t.series.B_min))}.`, t.series.B_min, (v) => (isNum(v) ? `${num(v)} min` : '—')),
-    mult('C corrections', `Turns you corrected. Median ${num(median(t.series.C))}.`, t.series.C, num),
-    mult('Active agent time', `Hours with at least one agent working.`, t.series.active_h, (v) => (isNum(v) ? `${num(v)} h` : '—')),
-    mult('Cost per day', `All models, list prices.`, cost, usd),
+  const head = (nm, v) => `<div class="mh"><span class="nm">${nm}</span><span class="v">${v}</span></div>`;
+  const axis = `<div class="axis"><span>${esc(short(t.days[0]))}</span><span>${esc(short(t.days[cur]))}</span></div>`;
+  const mult = (nm, sub, s, f) => `<div class="mult">${head(nm, f(s[cur]))}${barRow(s, t.days, f, cur)}${axis}<div class="ms">${sub}</div></div>`;
+  const legend = (stacks) => `<div class="legend mini">${stacks.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>`;
+  const multS = (nm, sub, stacks, f) => {
+    const tot = t.days.map((_, i) => (stacks.some((s) => isNum(s.series[i])) ? stacks.reduce((a, s) => a + (s.series[i] || 0), 0) : null));
+    return `<div class="mult">${head(nm, f(tot[cur]))}${stackRow(stacks, t.days, f, cur)}${axis}${legend(stacks)}<div class="ms">${sub}</div></div>`;
+  };
+  const minF = (v) => (isNum(v) ? `${num(v)} min` : '—');
+  const hF = (v) => (isNum(v) ? `${num(v)} h` : '—');
+  const pctPt = (v) => (isNum(v) ? `${Math.round(v)}%` : '—');
+  const fg = 'var(--foreground)';
+
+  // V: pooled over the range plus the median of days that had edit batches
+  const V = z('V'), Vn = z('V_n');
+  let vb = 0, vv = 0;
+  V.forEach((v, i) => { if (isNum(v) && isNum(Vn[i])) { vb += Vn[i]; vv += v * Vn[i]; } });
+  const vDays = V.filter(isNum).length;
+  const vSub = vb ? `${pct(vv / vb)} of ${num(vb)} batches verified over ${vDays} day${vDays === 1 ? '' : 's'} with edits. Daily median ${pct(median(V))}. Days without edits are gaps.`
+    : vDays ? `Verified share on ${vDays} day${vDays === 1 ? '' : 's'} with edits. Median ${pct(median(V))}. Days without edits are gaps.` : 'No edit batches in this range.';
+  const Hs = z('H');
+  const hSub = Hs.some(isNum) ? `Edits you made by hand. Median ${num(median(Hs))}.` : 'Not measured yet: needs the hook git snapshots.';
+  const C = z('C');
+  const causes = Object.keys(sr).filter((k) => k.startsWith('C:cause:'))
+    .map((k) => ({ k: k.slice(8), s: sr[k], total: sr[k].reduce((a, v) => a + (v || 0), 0) })).sort((a, b) => b.total - a.total);
+  const causeStacks = causes.map((c, i) => ({ name: pretty(c.k), series: c.s, color: shade(i < 2 ? 'var(--brand-clay)' : fg, i < 2 ? i : i - 2) }));
+  const scored = [
+    mult('V verified edits', vSub, V, pct),
+    mult('H hand edits', hSub, Hs, num),
+    mult('B blocked', `Minutes an agent waited on you. Median ${minF(median(z('B_min')))}.`, z('B_min'), minF),
+    causeStacks.length
+      ? multS(`C corrections ${UNCAL}`, `Turns you corrected, by judge cause. Median ${num(median(C))}. Days the judge has not run are gaps.`, causeStacks, num)
+      : mult(`C corrections ${UNCAL}`, `Turns you corrected. ${C.some(isNum) ? `Median ${num(median(C))}.` : 'Run <code class="cmd">scorer judge</code>.'}`, C, num),
   ].join('');
-  const causeRows = [...causes.entries()].map(([k, s]) => ({ k, s, total: s.reduce((a, v) => a + (v || 0), 0) })).sort((a, b) => b.total - a.total);
-  const dayRows = t.days.map((dd, i) => i).reverse().filter((i) => perDay[i]).map((i) => `<tr class="row">
+
+  const gapKeys = [['gap_bucket:lt30s', '< 30 s'], ['gap_bucket:<30s', '< 30 s'], ['gap_bucket:30s-2m', '30 s–2 min'], ['gap_bucket:2-5m', '2–5 min'], ['gap_bucket:5-15m', '5–15 min'], ['gap_bucket:break', 'break > 15 min']]
+    .filter(([k]) => sr[k]);
+  const gapStacks = gapKeys.map(([k, nm], i) => ({ name: nm, series: sr[k], color: shade(k.endsWith('break') ? 'var(--brand-clay)' : fg, k.endsWith('break') ? 1 : i) }));
+  const time = [
+    mult('Active agent time', 'Hours with at least one agent working.', z('active_h'), hF),
+    mult('Parallel time', 'Hours with two or more agents working at once.', z('overlap_h'), hF),
+    mult('Interruptions', `Turns you stopped mid-run. Median ${num(median(z('interrupts')))}.`, z('interrupts'), num),
+    mult('Thrown-away agent time', 'Agent minutes discarded by those interruptions.', z('thrown_min'), minF),
+    gapStacks.length ? multS('Gaps between turns', `Time from a turn's end to your next prompt. Median gap ${dur(z('gap_median_s')[cur])} on the selected day.`, gapStacks, num) : '',
+  ].join('');
+
+  const models = t.models || [];
+  const famColor = (m) => (/^claude/.test(m) ? 'var(--lane-claude)' : 'var(--lane-codex)');
+  const famIdx = {};
+  const costStacks = models.map((m) => { const f = famColor(m); famIdx[f] = (famIdx[f] || 0); return { name: m, series: sr[`cost_usd:${m}`] || [], color: shade(f, famIdx[f]++) }; });
+  const tokStacks = [
+    { name: 'input', series: z('tokens_in'), color: shade(fg, 0) },
+    { name: 'output', series: z('tokens_out'), color: shade('var(--brand-clay)', 0) },
+    { name: 'cached', series: z('tokens_cached'), color: shade(fg, 3) },
+  ];
+  const ctxStacks = [
+    { name: 'p50', series: z('context_p50'), color: shade(fg, 0) },
+    { name: 'p50–p90', series: z('context_p90').map((v, i) => (isNum(v) && isNum(z('context_p50')[i]) ? Math.max(v - z('context_p50')[i], 0) : v)), color: shade(fg, 3) },
+  ];
+  const subTok = z('subagent_tokens'), subCost = z('subagent_cost_usd');
+  const agents = [
+    mult('Cost per day', 'All models, list prices.', z('cost_usd'), usd),
+    costStacks.length ? multS('Cost by model', 'Claude in clay, Codex/GPT in blue.', costStacks, usd) : '',
+    multS('Tokens', `Input, output and cache reads per day. ${tok(sr.tokens_out ? sr.tokens_out[cur] : null)} output on the selected day.`, tokStacks, tok),
+    mult('Subagents launched', `Selected day: ${tok(subTok[cur])} subagent tokens, ${usd(subCost[cur])}.`, z('subagents'), num),
+    mult('Subagent tokens', `Tokens spent inside subagents. ${usd(subCost.reduce((a, v) => a + (v || 0), 0))} in range.`, subTok, tok),
+    multS('Context window used', `Median and p90 of how full the context was per call. p90 ${pctPt(z('context_p90')[cur])} on the selected day.`, ctxStacks, pctPt),
+    mult('Tooling started by you', 'Share of skills, commands, MCP and plugin uses you started.', z('tooling_human_share'), pct),
+  ].join('');
+
+  const dayRows = t.days.map((dd, i) => i).reverse().filter((i) => isNum(sr.active_h[i]) || isNum(z('cost_usd')[i])).map((i) => `<tr class="row">
       <td class="mono" style="font-size:13px">${esc(short(t.days[i]))}</td>
-      <td class="num">${pct(t.series.V[i])}</td><td class="num">${perDay[i] && hUnmeasured(perDay[i]) ? '—' : num(t.series.H[i])}</td><td class="num">${num(t.series.B_min[i])}</td>
-      <td class="num">${num(t.series.C[i])}</td><td class="num">${num(t.series.active_h[i])}</td><td class="num">${usd(cost[i])}</td></tr>`).join('');
+      <td class="num">${pct(V[i])}</td><td class="num">${num(Hs[i])}</td><td class="num">${num(z('B_min')[i])}</td>
+      <td class="num">${num(C[i])}</td><td class="num">${num(sr.active_h[i])}</td><td class="num">${num(z('interrupts')[i])}</td><td class="num">${tok(isNum(z('tokens_in')[i]) ? z('tokens_in')[i] + (z('tokens_cached')[i] || 0) + (z('tokens_out')[i] || 0) : null)}</td><td class="num">${usd(z('cost_usd')[i])}</td></tr>`).join('');
   return `
   <section class="section-head">
-    <div><h1 class="page-title">Trends</h1><p class="page-sub">Last ${n} days to ${esc(short(t.days[cur]))}. Dark bar: selected day. Dashed line: ${n}-day median.</p></div>
+    <div><h1 class="page-title">Trends</h1><p class="page-sub">Last ${n} days to ${esc(short(t.days[cur]))}. Dark bar: selected day. Dashed line: median of the days with data.</p></div>
     <div class="seg" role="group" aria-label="Range">${[7, 14, 30].map((k) => `<button type="button" data-range="${k}" aria-pressed="${n === k}">${k} days</button>`).join('')}</div>
   </section>
-  <div class="multiples auto">${main}</div>
-  <section class="section">
-    <div class="section-head"><h2>Corrections by cause</h2><span class="note">Judge labels per day</span></div>
-    ${causeRows.length ? `<div class="multiples auto">${causeRows.map((c) => mult(esc(pretty(c.k)), `${num(c.total)} in range`, c.s, num)).join('')}</div>` : '<p class="sub-note">No labelled corrections in this range. Run <code class="cmd">scorer judge</code>.</p>'}
-  </section>
+  <section class="section"><div class="section-head"><h2>Scored</h2><span class="note">V, H, B, C</span></div><div class="multiples auto">${scored}</div></section>
+  <section class="section"><div class="section-head"><h2>Time</h2><span class="note">active, parallel, interruptions, gaps</span></div><div class="multiples auto">${time}</div></section>
+  <section class="section"><div class="section-head"><h2>Agents &amp; cost</h2><span class="note">tokens, cost by model, subagents, context</span></div><div class="multiples auto">${agents}</div></section>
   <details class="rline trends-by-day">
     <summary><span class="rt">By day</span><span class="rs">table of the days with activity</span>${icon('chev', 'icon chev')}</summary>
-    <div class="rb"><div class="table-shell"><table><thead><tr><th>Day</th><th class="num">V</th><th class="num">H</th><th class="num">B min</th><th class="num">C</th><th class="num">Active h</th><th class="num">Cost</th></tr></thead>
-    <tbody>${dayRows || '<tr><td colspan="7" class="muted">No activity.</td></tr>'}</tbody></table></div></div>
+    <div class="rb"><div class="table-shell"><table><thead><tr><th>Day</th><th class="num">V</th><th class="num">H</th><th class="num">B min</th><th class="num">C</th><th class="num">Active h</th><th class="num">Interrupts</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead>
+    <tbody>${dayRows || '<tr><td colspan="9" class="muted">No activity.</td></tr>'}</tbody></table></div></div>
   </details>`;
 };
 
@@ -908,8 +1038,8 @@ VIEWS_leverage = async function () {
   ${cats.some(([, c]) => c.default) ? `<p class="sub-note">Hooks and CLAUDE.md / AGENTS.md started ${num(cats.reduce((a, [, c]) => a + (c.default || 0), 0))} calls on their own. Those count as default, not you or the agent.</p>` : ''}
   <section class="section">
     <div class="section-head"><h2>Subagents</h2><span class="note">not scored</span></div>
-    ${Array.isArray(L.subagent_types) && L.subagent_types.length ? `<div class="table-shell"><table><thead><tr><th>Subagent</th><th class="num">Runs</th><th>Started by</th><th class="num">Median time</th><th>Model</th></tr></thead><tbody>
-      ${L.subagent_types.map((a) => `<tr class="row"><td class="mono" style="font-size:13px">${esc(a.name)}</td><td class="num">${num(a.runs)}</td><td>${esc(Object.entries(a.initiators || {}).map(([k, v]) => `${k === 'human' ? 'you' : k} ${v}`).join(' · '))}</td><td class="num">${dur(a.median_s)}</td><td class="mono" style="font-size:12.5px">${esc(a.model || '—')}</td></tr>`).join('')}</tbody></table></div>`
+    ${Array.isArray(L.subagent_types) && L.subagent_types.length ? `<div class="table-shell"><table><thead><tr><th>Subagent</th><th class="num">Runs</th><th>Started by</th><th class="num">Median time</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>
+      ${L.subagent_types.map((a) => `<tr class="row"><td class="mono" style="font-size:13px">${esc(a.name)}</td><td class="num">${num(a.runs)}</td><td>${esc(Object.entries(a.initiators || {}).map(([k, v]) => `${k === 'human' ? 'you' : k} ${v}`).join(' · '))}</td><td class="num">${dur(a.median_s)}</td><td class="mono" style="font-size:12.5px">${esc(a.model || '—')}</td><td class="num">${tok(a.tokens)}</td><td class="num">${usd(a.cost_usd)}</td></tr>`).join('')}</tbody></table></div>`
       : `<p class="sub-note">${num(L.subagents)} subagent runs today. A breakdown by subagent type is not available from this server yet.</p>`}
   </section>
   <section class="section">
@@ -925,6 +1055,7 @@ const AFTER = {
   today() {
     drawTimeline();
     fillNarrative();
+    fillActions();
     if (S.selTurn != null) {
       const id = S.selTurn, fl = pendingFlash === id; pendingFlash = null;
       getDay(S.day).then((d) => {
@@ -944,6 +1075,12 @@ document.addEventListener('click', (e) => {
   const tr = e.target.closest('tr[data-turnrow]'); if (tr) { toggleTurnRow(tr); return; }
   const sr = e.target.closest('tr[data-session]'); if (sr) { selectSession(sr.dataset.session); return; }
   const as = e.target.closest('[data-ask-session]'); if (as) { const id = as.dataset.askSession; getDay(S.day).then((d) => { const s = d.sessions.find((x) => x.id === id); setAsk(true); input.value = `Summarize session ${s ? s.short : id} in ${s ? s.repo : 'this repo'}: what got done, and where did I lose time?`; autoGrow(); syncComposer(); setTimeout(() => input.focus(), 330); }); return; }
+  const aw = e.target.closest('[data-askwhy]');
+  if (aw) { const a = actionItems[+aw.dataset.askwhy]; if (a) { setAsk(true); const ids = (a.turn_ids || []).slice(0, 5).map((t) => `#${t}`).join(', '); input.value = `Why this action item: "${a.text}"? Walk me through the evidence${ids ? ` (turns ${ids})` : ''} and what to change.`; autoGrow(); syncComposer(); setTimeout(() => input.focus(), 330); } return; }
+  const cl = e.target.closest('[data-copyline]');
+  if (cl) { const a = actionItems[+cl.dataset.copyline]; if (a && a.claude_md_line) { const done = (ok) => { cl.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(() => { cl.textContent = 'Copy'; }, 1500); }; try { navigator.clipboard.writeText(a.claude_md_line).then(() => done(true), () => done(false)); } catch (err) { done(false); } } return; }
+  const tg = e.target.closest('[data-toggle-temp]');
+  if (tg) { S.includeTemp = !S.includeTemp; try { localStorage.setItem('scorer-include-temp', S.includeTemp ? '1' : '0'); } catch (err) { /* ignore */ } S.selSession = null; render(); return; }
   const rg = e.target.closest('[data-range]'); if (rg) { S.trendRange = +rg.dataset.range; render(); return; }
   const sc = e.target.closest('[data-skillcat]');
   if (sc) { S.skillCat = sc.dataset.skillcat; document.querySelectorAll('[data-skillcat]').forEach((b) => b.setAttribute('aria-pressed', String(b === sc))); getDay(S.day).then((d) => { $('#skillbars').innerHTML = skillBars(d, S.skillCat); }); return; }
@@ -1071,7 +1208,8 @@ function messageHTML(m, i) {
       ${k.cites.slice(0, 3).map((c) => `<button type="button" data-peek="${c.n}"><span class="sn">[${c.n}]</span><span class="sl">${c.turn_id != null ? `<span class="mono">#${c.turn_id}</span> ` : ''}${esc(c.label || '')}</span></button>`).join('')}</div>`).join('');
   return `<div class="msg assistant" data-mi="${i}">${stepsHTML(m, live)}${card}
     ${m.text ? `<div class="md">${md(m.text)}</div>` : ''}
-    ${m.error ? `<div class="errline">${esc(m.error)}</div>` : ''}</div>`;
+    ${m.error ? `<div class="errline">${esc(m.error)}</div>` : ''}
+    ${!live && i === chat.messages.length - 1 && (m.suggestions || []).length ? `<div class="quick" role="group" aria-label="Suggested follow-ups">${m.suggestions.map((q, k) => `<button type="button" data-quick="${k}" title="${esc(q.prompt)}">${esc(q.label || q.prompt)}</button>`).join('')}</div>` : ''}</div>`;
 }
 
 function emptyHTML() {
@@ -1180,6 +1318,7 @@ function onEvent(m, ev) {
       if ((ev.citations || []).length) (m.cards = m.cards || []).push({ name: ev.name || 'subagent', summary: ev.summary || '', cites: ev.citations });
       break;
     }
+    case 'suggestions': m.suggestions = (ev.items || []).filter((x) => x && x.prompt).slice(0, 4); break;
     case 'error': m.error = ev.message || 'The analyst hit an error.'; break;
     case 'done': break;
     default: return;
@@ -1189,6 +1328,8 @@ function onEvent(m, ev) {
 
 $('#log').addEventListener('click', (e) => {
   const sg = e.target.closest('[data-suggest]'); if (sg) { send(sg.dataset.suggest); return; }
+  const qk = e.target.closest('[data-quick]');
+  if (qk) { const mi = +qk.closest('[data-mi]').dataset.mi; const q = (chat.messages[mi].suggestions || [])[+qk.dataset.quick]; if (q) send(q.prompt); return; }
   const st = e.target.closest('[data-steps]');
   if (st) { const m = chat.messages.find((x) => x.id === +st.dataset.steps); if (m) { m.open = !m.open; renderChat(true); } return; }
   const pk = e.target.closest('[data-peek]');
@@ -1246,7 +1387,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#peek
   syncThemeIcon();
   S.tab = readHash();
   if (!location.hash) history.replaceState(null, '', `${location.pathname}${location.search}#/today`);
-  setAsk(window.innerWidth >= 1200);
+  setAsk(window.innerWidth >= 1440);
   try {
     const st = await api('/api/chat/status');
     chat.available = !!st.available; chat.reason = st.reason; chat.model = st.model;

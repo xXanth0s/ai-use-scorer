@@ -459,7 +459,7 @@ code.cmd { font-family: var(--font-code); font-size: 13px; background: var(--mut
 
 /* ---------- responsive ---------- */
 @media (max-width: 1240px) { .multiples { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 1100px) {
+@media (max-width: 1439px) {   /* below 1440 the chat is an overlay drawer: the main column keeps its width */
   .ask.open { position: fixed; right: 0; top: 48px; bottom: 0; z-index: 20; box-shadow: -8px 0 24px rgb(0 0 0 / .08); }
 }
 @media (max-width: 760px) {
@@ -562,3 +562,56 @@ table.sess .vcell .t { min-width: 0; }
 table.sess .vbar { min-width: 32px; }
 :root[data-theme="dark"] .hours .cell .a { opacity: .55; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .hours .cell .a { opacity: .55; } }
+
+/* ---------- trends: gaps, stacked bars ---------- */
+.bars rect.na { fill: transparent; }
+.bars rect.seg { opacity: .55; }
+.bars rect.seg.cur { opacity: 1; }
+.legend.mini { gap: 4px 12px; font-size: 11.5px; }
+.legend.mini .sw { width: 8px; height: 8px; border-radius: 2px; }
+
+/* ---------- sessions: row-expansion facts ---------- */
+.sess-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px 24px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.sess-facts .k { font-size: 12px; color: var(--muted-foreground); }
+.sess-facts .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sess-facts .s { font-size: 12px; color: var(--muted-foreground); line-height: 1.4; }
+.sess-facts .wide { grid-column: 1 / -1; }
+.sess-facts ul.mix { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 24px; font-size: 13px; }
+.sess-facts ul.mix li { display: inline-flex; gap: 8px; }
+.sess-facts ul.mix li span:last-child { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+@media (max-width: 900px) { .sess-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---------- chat: quick-response tiles under the last answer ---------- */
+.quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.quick button { font: inherit; font-size: 13px; line-height: 1.3; color: var(--brand-pine); background: #ffffff; border: 1px solid #ddd9d3; border-radius: 999px; padding: 6px 12px; cursor: pointer; text-align: left; max-width: 100%; transition: background-color .15s; }
+.quick button:hover { background: #f7f7f5; }
+.quick button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+:root[data-theme="dark"] .quick button { color: var(--foreground); background: var(--background); border-color: var(--border); }
+:root[data-theme="dark"] .quick button:hover { background: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .quick button { color: var(--foreground); background: var(--background); border-color: var(--border); }
+  :root:not([data-theme="light"]) .quick button:hover { background: var(--muted); }
+}
+
+/* ---------- truncation helpers ---------- */
+.trunc { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+/* left-truncate: keep the tail of a path ("…/src/scorer/serve.py"); full text in the title */
+.ltrunc { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; vertical-align: bottom; }
+.ltrunc > bdi { direction: ltr; unicode-bidi: isolate; }
+.chip-uncal { font-size: 11px; font-weight: 500; padding: 1px 6px; border-radius: 999px; border: 1px dashed var(--border); color: var(--muted-foreground); background: transparent; cursor: help; vertical-align: middle; white-space: nowrap; }
+
+/* ---------- Today: action items ---------- */
+ol.actions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+ol.actions > li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; padding: 14px 0; border-top: 1px solid var(--border); }
+ol.actions > li:first-child { border-top: 0; padding-top: 4px; }
+ol.actions .an { width: 24px; height: 24px; border-radius: 999px; background: var(--muted); color: var(--foreground); font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+ol.actions .ab { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+ol.actions .at { font-size: 15px; font-weight: 500; line-height: 1.5; }
+ol.actions .am { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+ol.actions blockquote.q { margin: 0; color: var(--muted-foreground); font-size: 13px; }
+ol.actions .mdline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+ol.actions .mdline .lbl { font-size: 12px; color: var(--muted-foreground); }
+ol.actions .mdline code.cmd { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.linkbtn { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; padding: 0; font: inherit; font-size: 13px; color: var(--brand-grass); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.linkbtn .icon { width: 14px; height: 14px; }
+.linkbtn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
