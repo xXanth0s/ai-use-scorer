@@ -1,0 +1,736 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>scorer · Daily</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&amp;family=DM+Mono:wght@300;400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.root{--bg:#ffffff;--fg:#1c2d22;--card:#fefcf8;--muted:#f7f7f5;--muted-fg:#4d5a4d;--accent:#f0efed;--border:#ddd9d3;--primary:#1c2d22;--primary-fg:#ffffff;--pine:#1c2d22;--grass:#316c5a;--salmon:#ffb299;--claude:#b36813;--codex:#0369a1;--ok:#316c5a;--ok-bg:#e6edeb;--fail:#802d11;--fail-bg:#f1e7e2;--pill:rgba(28,45,34,.1);--shade:rgba(28,45,34,.06);--mid:#8a958a;--r:8px}
+.root.t-dark{--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--muted-fg:#a1a1a1;--accent:#262626;--border:rgba(255,255,255,.1);--primary:#e5e5e5;--primary-fg:#171717;--grass:#4ade80;--claude:#c98a3f;--codex:#38bdf8;--ok:#4ade80;--ok-bg:rgba(74,222,128,.12);--fail:#f0a58a;--fail-bg:rgba(240,165,138,.12);--pill:rgba(255,255,255,.1);--shade:rgba(255,255,255,.06);--mid:#737373}
+@media (prefers-color-scheme: dark){.root.t-auto{--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--muted-fg:#a1a1a1;--accent:#262626;--border:rgba(255,255,255,.1);--primary:#e5e5e5;--primary-fg:#171717;--grass:#4ade80;--claude:#c98a3f;--codex:#38bdf8;--ok:#4ade80;--ok-bg:rgba(74,222,128,.12);--fail:#f0a58a;--fail-bg:rgba(240,165,138,.12);--pill:rgba(255,255,255,.1);--shade:rgba(255,255,255,.06);--mid:#737373}}
+.root{background:var(--bg);color:var(--fg);font-family:'GT America Standard','GT America','Public Sans',ui-sans-serif,system-ui,sans-serif;font-size:15px;line-height:1.6;min-height:100vh;-webkit-font-smoothing:antialiased}
+.root *{box-sizing:border-box}
+.mono{font-family:'GT America Mono','DM Mono',ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+.muted{color:var(--muted-fg)}
+.label{font-family:'GT America Mono','DM Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted-fg)}
+button,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.shell{display:flex;min-height:100vh}
+.rail{width:48px;flex:none;background:#1c2d22;display:flex;flex-direction:column;align-items:center;gap:8px;padding:8px 0}
+.mark{width:32px;height:32px;border-radius:6px;background:#f9f2e7;color:#1c2d22;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;margin-bottom:8px}
+.railbtn{width:32px;height:32px;border-radius:6px;border:0;background:transparent;color:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.railbtn.on{background:rgba(255,255,255,.1);color:#fff}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.hdr{height:48px;flex:none;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:0 24px;background:var(--bg)}
+.crumbs{display:flex;align-items:center;gap:8px;font-size:14px;flex:1;min-width:0}
+.sep{width:1px;height:16px;background:var(--border)}
+.ghost{width:32px;height:32px;border:0;border-radius:6px;background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fg)}
+.ghost:hover{background:var(--accent)}
+.avatar{width:28px;height:28px;border-radius:9999px;background:var(--muted);border:1px solid var(--border);font-size:12px;display:flex;align-items:center;justify-content:center;font-weight:500}
+.row{display:flex;flex:1;min-height:0}
+.content{flex:1;min-width:0;padding:32px}
+.col{max-width:920px}
+.titlerow{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+h1{font-family:'Oceanic Text','GT America Standard','Public Sans',sans-serif;font-size:24px;font-weight:600;line-height:1.3;margin:0}
+h2{font-family:'Oceanic Text','GT America Standard','Public Sans',sans-serif;font-size:18px;font-weight:600;line-height:1.4;margin:0}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btn{height:36px;padding:0 16px;border-radius:6px;border:1px solid var(--border);background:var(--bg);font-size:14px;font-weight:500;display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:var(--fg)}
+.btn:hover{background:var(--accent)}
+.btn.on{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+.tabs{display:flex;gap:24px;border-bottom:1px solid var(--border);margin-top:24px;overflow-x:auto}
+.tab{border:0;background:none;padding:10px 0;font-size:15px;font-weight:500;color:var(--muted-fg);cursor:pointer;box-shadow:inset 0 -2px 0 transparent;white-space:nowrap}
+.tab:hover{color:var(--fg)}
+.tab.on{color:var(--fg);box-shadow:inset 0 -2px 0 var(--fg)}
+.sec{margin-top:40px}
+.sechead{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+.verdict{font-size:20px;line-height:1.5;margin:32px 0 0;max-width:46em;text-wrap:pretty}
+.change{margin-top:20px;display:flex;flex-direction:column;gap:4px}
+.change p{margin:0;font-size:16px;max-width:46em}
+.tlink{border:0;background:none;padding:0;cursor:pointer;font-family:'GT America Mono','DM Mono',monospace;font-size:14px;color:var(--fg);text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:3px}
+.tlink:hover{text-decoration-color:var(--fg)}
+.links{display:inline-flex;gap:10px;flex-wrap:wrap}
+
+
+.dot{width:8px;height:8px;border-radius:9999px;flex:none}
+.c-claude{background:var(--claude)}
+.c-codex{background:var(--codex)}
+
+
+
+
+.tick{position:absolute;top:9px;width:2px;height:14px;background:var(--fg);margin-left:-1px}
+.axis{position:relative;height:24px;border-top:1px solid var(--border)}
+.axis span{position:absolute;top:4px;transform:translateX(-50%);font-size:12px;color:var(--muted-fg)}
+.legend{display:flex;gap:20px;flex-wrap:wrap;font-size:13px;color:var(--muted-fg);margin-top:8px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:14px;height:6px;border-radius:3px}
+.sw-ovl{width:14px;height:12px;background:var(--shade);border:1px solid var(--border)}
+.sw-tick{width:2px;height:12px;background:var(--fg)}
+.tblwrap{overflow-x:auto}
+.tbl{width:100%;border-collapse:collapse;font-size:15px}
+.tbl th{text-align:left;font-weight:500;font-size:13px;color:var(--muted-fg);padding:8px 12px 8px 0;border-bottom:1px solid var(--border);white-space:nowrap}
+.tbl td{padding:12px 12px 12px 0;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl tr.hl td{background:var(--muted)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.tbl th.num{text-align:right}
+.trend{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.trend svg{overflow:visible}
+.rowbtn{border:0;background:none;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:8px;text-align:left;font-size:15px}
+.rowbtn:hover{text-decoration:underline;text-underline-offset:3px}
+.dl{display:grid;grid-template-columns:220px minmax(0,1fr);margin:0}
+.dl dt,.dl dd{padding:10px 0;border-bottom:1px solid var(--border);margin:0}
+.dl dt{color:var(--muted-fg)}
+.models{display:grid;grid-template-columns:minmax(0,1fr) auto auto;column-gap:24px}
+.badge{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:9999px;font-size:12px;font-weight:500;white-space:nowrap;border:1px solid transparent}
+.b-ok{background:var(--ok-bg);color:var(--ok)}
+.b-fail{background:var(--fail-bg);color:var(--fail)}
+.b-unv{border-color:var(--border);color:var(--muted-fg)}
+.b-na{color:var(--muted-fg)}
+.back{border:0;background:none;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:4px;color:var(--muted-fg);font-size:14px;margin-top:24px}
+.back:hover{color:var(--fg)}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:32px 40px}
+.chart svg{width:100%;height:72px;display:block}
+.chart .head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;font-size:15px}
+.note{font-size:15px;color:var(--muted-fg);margin:8px 0 0;max-width:46em}
+.cand{display:grid;grid-template-columns:200px minmax(0,1fr);column-gap:24px;padding:20px 0;border-bottom:1px solid var(--border)}
+.cand .vals{display:flex;gap:32px;flex-wrap:wrap}
+.cand .q{margin:8px 0 0;font-size:15px}
+.aside{width:0;flex:none;overflow:hidden;border-left:1px solid var(--border);background:var(--bg);transition:width .3s ease-in-out}
+.aside.open{width:28rem}
+.ain{width:28rem;max-width:100vw;position:sticky;top:0;height:min(100vh,860px);display:flex;flex-direction:column}
+.ahead{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--border)}
+.model{font-family:'GT America Mono','DM Mono',monospace;font-size:11px;color:var(--muted-fg);border:1px solid var(--border);border-radius:9999px;padding:1px 8px}
+.convo{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:32px}
+.msg-user{margin-left:auto;max-width:95%;background:var(--primary);color:var(--primary-fg);border-radius:8px;padding:12px 16px;font-size:15px}
+.msg-ai{max-width:95%;display:flex;flex-direction:column;gap:12px;font-size:15px}
+.msg-ai p{margin:0}
+.steps{border:0;background:none;padding:0;cursor:pointer;color:var(--muted-fg);display:inline-flex;align-items:center;gap:6px;font-size:14px;width:fit-content}
+.steps:hover{color:var(--fg)}
+.steplist{list-style:none;margin:0;padding:2px 0 0 8px;display:flex;flex-direction:column;gap:8px}
+.steplist li{display:flex;gap:12px}
+.steplist .t{font-size:14px;font-weight:500;line-height:1.4}
+.steplist .s{font-size:13px;color:var(--muted-fg);line-height:1.4}
+.cite{display:inline-flex;align-items:center;justify-content:center;height:16px;min-width:16px;padding:0 4px;margin:0 2px;border-radius:9999px;border:0;background:var(--pill);color:var(--fg);font-family:'GT America Mono','DM Mono',monospace;font-size:11px;font-weight:500;line-height:1;vertical-align:super;cursor:pointer}
+.cite:hover,.cite.on{background:var(--primary);color:var(--primary-fg)}
+.empty{display:flex;flex-direction:column;align-items:center;gap:16px;padding:48px 0;text-align:center}
+.tile{width:40px;height:40px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--muted-fg);display:flex;align-items:center;justify-content:center}
+.chips{display:flex;flex-direction:column;gap:8px;width:100%;max-width:300px}
+.chip{border:0;background:none;padding:6px 0;text-align:left;font-size:15px;cursor:pointer;color:var(--fg)}
+.chip:hover{color:var(--grass)}
+.composer{flex:none;border-top:1px solid var(--border);display:flex;align-items:flex-end;gap:8px;padding:8px 12px}
+.composer textarea{flex:1;min-height:36px;resize:none;border:0;background:transparent;outline:none;padding:8px 0;font-size:15px}
+.composer textarea::placeholder{color:var(--muted-fg)}
+.send{width:32px;height:32px;border-radius:9999px;border:0;background:var(--muted);color:var(--muted-fg);display:flex;align-items:center;justify-content:center;margin-bottom:2px}
+.peek{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;z-index:5}
+.peek .ph{border-bottom:1px solid var(--border);padding:12px 16px;display:flex;justify-content:space-between;gap:8px}
+.peek .pb{padding:12px 16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
+.peek blockquote{margin:0;border-left:2px solid var(--salmon);padding-left:12px;font-size:15px;white-space:pre-wrap}
+.sm{height:30px;padding:0 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;width:fit-content;color:var(--muted-fg)}
+.sm:hover{color:var(--fg);border-color:var(--grass)}
+@media (max-width:900px){.rail{display:none}.content{padding:20px 16px}.tlrow{grid-template-columns:132px minmax(0,1fr)}.ovlwrap{left:132px}.sk{grid-template-columns:110px minmax(0,1fr)}.sk .cnt{grid-column:1 / -1}.dl,.cand{grid-template-columns:minmax(0,1fr)}.dl dt{border-bottom:0;padding-bottom:0}.aside.open{position:fixed;inset:0;width:100%;z-index:20}}
+
+.report{list-style:decimal;margin:32px 0 0;padding-left:24px;display:flex;flex-direction:column;gap:18px;max-width:46em}
+.report li{padding-left:8px}
+.report li::marker{font-family:'GT America Mono','DM Mono',monospace;color:var(--muted-fg);font-size:14px}
+.report p{margin:0 0 4px;text-wrap:pretty}
+.report .lead{font-size:20px;line-height:1.5}
+.tlwrap{position:relative}
+.tlrow{display:grid;grid-template-columns:200px minmax(0,1fr)}
+.tlrow.g{height:28px;align-items:end}
+.g-lbl{font-size:14px;font-weight:600;padding-bottom:2px}
+.g-trk{height:100%;border-bottom:1px solid var(--border)}
+.tl-lbl{height:32px;display:flex;align-items:center;gap:8px;font-size:15px;white-space:nowrap;overflow:hidden;padding-left:16px}
+.track{position:relative;height:32px}
+.ovlwrap{position:absolute;left:200px;right:0;top:0;bottom:24px;pointer-events:none}
+.ovl{position:absolute;top:0;bottom:0;background:var(--shade)}
+.bar{position:absolute;top:8px;height:16px;border:0;padding:0;background:transparent;cursor:pointer}
+.line{display:block;height:6px;margin-top:5px;border-radius:3px}
+.bar:hover .line,.bar.on .line{height:8px;margin-top:4px}
+.pop{position:absolute;width:320px;max-width:calc(100% - 16px);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px;z-index:4;box-shadow:0 4px 12px rgba(0,0,0,.08);display:flex;flex-direction:column;gap:6px}
+.pop p{margin:0;font-size:15px;line-height:1.5}
+.ulink{border:0;background:none;padding:0;cursor:pointer;font-size:14px;font-weight:500;color:var(--fg);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--border);width:fit-content}
+.ulink:hover{text-decoration-color:var(--fg)}
+.strip{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:2px}
+.hr{display:flex;flex-direction:column;height:48px}
+.seg-a{background:var(--fg)}
+.seg-w{background:var(--mid)}
+.seg-i{background:var(--accent)}
+.sk{display:grid;grid-template-columns:180px minmax(0,1fr) 150px;gap:12px;align-items:center;padding:7px 0}
+.skbar{display:flex;height:8px;gap:1px}
+.sk-you{background:var(--fg)}
+.sk-agent{background:var(--mid)}
+.cnt{font-size:14px;color:var(--muted-fg);text-align:right}
+.segc{display:inline-flex;gap:2px;border:1px solid var(--border);border-radius:9999px;padding:3px;background:var(--muted)}
+.segc button{border:0;background:none;border-radius:9999px;padding:4px 14px;font-family:'GT America Mono','DM Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-fg);cursor:pointer}
+.segc button.on{background:var(--primary);color:var(--primary-fg)}
+.cols{display:grid;grid-template-columns:repeat(14,minmax(0,1fr));gap:2px;height:72px;align-items:end}
+.colstack{display:flex;flex-direction:column;justify-content:flex-end}
+.rcard{border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.rcard .rh{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.rcard table{width:100%;border-collapse:collapse;font-size:14px}
+.rcard td{padding:6px 12px;border-bottom:1px solid var(--border)}
+.rcard tr:last-child td{border-bottom:0}
+.send.on{background:var(--primary);color:var(--primary-fg);cursor:pointer}
+.flow{width:100%;max-width:760px;height:auto;display:block}
+
+.narr{margin-top:32px;max-width:46em}
+.narr p{margin:0;font-size:19px;line-height:1.6;text-wrap:pretty}
+.narr .by{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;color:var(--muted-fg)}
+.sec2{margin-top:36px}
+.sh{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.lines{display:flex;flex-direction:column}
+.ln{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 16px;padding:10px 0;border-bottom:1px solid var(--border);align-items:baseline}
+.ln p{margin:0}
+.cmd{font-family:'GT America Mono','DM Mono',monospace;font-size:14px;background:var(--muted);border-radius:4px;padding:1px 6px}
+.big{font-size:20px}
+.diag{display:flex;flex-wrap:wrap;gap:6px 20px;padding:10px 0;font-size:15px}
+</style>
+</helmet>
+<div class="{{rootClass}}">
+<div class="shell">
+  <nav class="rail" aria-label="App">
+    <div class="mark" aria-hidden="true">s</div>
+    <button type="button" class="railbtn on" aria-label="Daily"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg></button>
+    <button type="button" class="railbtn" aria-label="Candidates"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg></button>
+  </nav>
+  <div class="main">
+    <header class="hdr">
+      <button type="button" class="ghost" aria-label="Toggle navigation"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M9 3v18"></path></svg></button>
+      <span class="sep" aria-hidden="true"></span>
+      <div class="crumbs"><span class="muted">scorer</span><span class="muted" aria-hidden="true">/</span><span>Daily</span></div>
+      <button type="button" class="ghost" aria-label="Switch to {{themeLabel}} theme" onClick="{{toggleTheme}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg></button>
+      <span class="avatar" aria-label="Signed in as J. Rivera">JR</span>
+    </header>
+    <div class="row">
+      <main class="content">
+        <div class="col">
+          <div class="titlerow">
+            <div>
+              <h1>Tuesday, 14 October</h1>
+              <div class="muted">6 sessions in 4 repos · Claude Code and Codex</div>
+            </div>
+            <div class="btns">
+              <button type="button" class="btn">Tue 14 Oct<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+              <button type="button" class="{{askClass}}" aria-pressed="{{askOpen}}" onClick="{{toggleAsk}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>Ask AI</button>
+            </div>
+          </div>
+          <nav class="tabs" aria-label="Views">
+            <sc-for list="{{tabs}}" as="t" hint-placeholder-count="5"><button type="button" class="{{t.cls}}" aria-current="{{t.cur}}" onClick="{{t.pick}}">{{t.label}}</button></sc-for>
+          </nav>
+
+          <sc-if value="{{isToday}}" hint-placeholder-val="{{ true }}">
+            <div class="narr">
+              <p>A blocked day. Agents waited on you for 47 minutes, double your median, mostly the rate-limit worktree while you were in web-dashboard<button type="button" class="{{n1Class}}" aria-label="Source 1" onClick="{{n1}}">1</button>. Verification fell to 41%<button type="button" class="{{n2Class}}" aria-label="Source 2" onClick="{{n2}}">2</button>: three patches to the rate limiter ran without a test until you asked for one at 15:10<button type="button" class="{{n3Class}}" aria-label="Source 3" onClick="{{n3}}">3</button>. Three of five corrections came from things you never said, not from the agent ignoring you<button type="button" class="{{n4Class}}" aria-label="Source 4" onClick="{{n4}}">4</button>. Tomorrow, answer a stopped agent before you switch windows.</p>
+              <div class="by"><svg class="i" style="width: 14px; height: 14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>Written by analyst agent · 18:04<span class="model">claude-opus-5-5</span></div>
+            </div>
+
+            <section class="sec2" aria-labelledby="h-now">
+              <div class="sh"><span id="h-now" class="label">Right now · unverified</span><span class="muted" style="font-size: 14px">run before you push</span></div>
+              <div class="lines">
+                <div class="ln"><p>web-dashboard <span class="muted">· main</span>: toolbar spacing</p><span class="cmd">pnpm test toolbar</span></div>
+                <div class="ln"><p>infra-terraform <span class="muted">· main</span>: alarm team tags</p><span class="cmd">terraform plan</span></div>
+              </div>
+            </section>
+
+            <section class="sec2" aria-labelledby="h-blk">
+              <div class="sh"><span id="h-blk" class="label">Blocked agents</span><span class="mono" style="font-size: 14px"><span class="big">47 m</span> <span class="muted">· median 22 m</span></span></div>
+              <p style="margin: 12px 0 12px">Worst window 13:40–14:35: 29 minutes across two sessions, both waiting on an answer.</p>
+              <div class="strip" role="img" aria-label="Agent active, waiting and idle minutes per hour, 09:00 to 18:00">
+                <sc-for list="{{strip}}" as="h" hint-placeholder-count="9"><div class="hr"><div class="seg-i" style="height: {{h.i}}%"></div><div class="seg-w" style="height: {{h.w}}%"></div><div class="seg-a" style="height: {{h.a}}%"></div></div></sc-for>
+              </div>
+              <div class="strip mono muted" style="font-size: 12px; margin-top: 4px"><sc-for list="{{strip}}" as="h" hint-placeholder-count="9"><span>{{h.t}}</span></sc-for></div>
+              <div class="legend"><span><i class="sw seg-a"></i>agent working</span><span><i class="sw seg-w"></i>agent waiting on you</span><span><i class="sw seg-i" style="border: 1px solid var(--border)"></i>idle</span></div>
+            </section>
+
+            <section class="sec2" aria-labelledby="h-cor">
+              <div class="sh"><span id="h-cor" class="label">Corrections by cause</span><span class="muted" style="font-size: 14px">5 today · median 4</span></div>
+              <div class="lines">
+                <div class="ln"><div><p><strong>Information missing · 3</strong></p><p class="muted">The idempotency key's merchant scope was never stated. Prevent: "Scope the key per merchant."</p></div><button type="button" class="tlink" onClick="{{go1430}}">#1430</button></div>
+                <div class="ln"><div><p><strong>Instruction violated · 1</strong></p><p class="muted">The rate-limit patch changed the webhook path. Prevent: "Leave /webhooks alone."</p></div><button type="button" class="tlink" onClick="{{go1447}}">#1447</button></div>
+                <div class="ln"><div><p><strong>Unclear · 1</strong></p><p class="muted">Judge abstained: correction or new requirement.</p></div><button type="button" class="tlink" onClick="{{go1444}}">#1444</button></div>
+              </div>
+            </section>
+
+            <section class="sec2" aria-labelledby="h-day">
+              <div class="sh"><span id="h-day" class="label">Day by worktree</span><span class="muted" style="font-size: 14px">hover a session for its summary</span></div>
+              <div class="tlwrap" style="margin-top: 4px" onMouseLeave="{{clearHover}}">
+                <div class="ovlwrap"><sc-for list="{{overlaps}}" as="o" hint-placeholder-count="3"><span class="ovl" style="left: {{o.l}}%; width: {{o.w}}%"></span></sc-for></div>
+                <sc-for list="{{tlrows}}" as="r" hint-placeholder-count="10">
+                  <sc-if value="{{r.isG}}" hint-placeholder-val="{{ false }}"><div class="tlrow g"><div class="g-lbl">{{r.repo}}</div><div class="g-trk"></div></div></sc-if>
+                  <sc-if value="{{r.isS}}" hint-placeholder-val="{{ true }}"><div class="tlrow"><div class="tl-lbl"><span class="dot {{r.cls}}" aria-hidden="true"></span><span class="mono" style="font-size: 14px">{{r.branch}}</span></div><div class="track" onMouseEnter="{{r.hover}}"><button type="button" class="{{r.barCls}}" style="left: {{r.l}}%; width: {{r.w}}%" aria-label="{{r.agent}} on {{r.branch}}, {{r.span}}" onFocus="{{r.hover}}" onClick="{{r.hover}}"><span class="line {{r.cls}}"></span></button><sc-for list="{{r.ticks}}" as="k" hint-placeholder-count="0"><span class="tick" style="left: {{k.l}}%"></span></sc-for></div></div></sc-if>
+                </sc-for>
+                <div class="tlrow"><div></div><div class="axis mono"><sc-for list="{{hours}}" as="h" hint-placeholder-count="10"><span style="left: {{h.l}}%">{{h.t}}</span></sc-for></div></div>
+                <sc-if value="{{hasHover}}" hint-placeholder-val="{{ false }}">
+                  <div class="pop" style="top: {{pop.top}}px; left: {{pop.left}}">
+                    <span class="label">Summary · analyst agent</span>
+                    <span style="font-weight: 600">{{pop.agent}} · {{pop.repo}}</span>
+                    <span class="mono muted" style="font-size: 12px">{{pop.path}} · {{pop.span}}</span>
+                    <p>{{pop.sum}}</p>
+                    <button type="button" class="ulink" onClick="{{pop.ask}}">Ask about this in chat</button>
+                  </div>
+                </sc-if>
+              </div>
+              <div class="legend"><span><i class="sw c-claude"></i>Claude Code</span><span><i class="sw c-codex"></i>Codex</span><span><i class="sw-ovl"></i>two sessions at once</span><span><i class="sw-tick"></i>interruption</span></div>
+            </section>
+
+            <section class="sec2" aria-labelledby="h-metrics">
+              <div class="sh"><span id="h-metrics" class="label">Scored · vs 7-day median</span><span class="muted" style="font-size: 14px">definition v1</span></div>
+              <div class="tblwrap"><table class="tbl">
+                <tbody>
+                  <sc-for list="{{metrics}}" as="m" hint-placeholder-count="4"><tr>
+                    <td><span class="mono">{{m.id}}</span>  {{m.name}}</td>
+                    <td class="num mono">{{m.today}}</td>
+                    <td class="num mono muted">{{m.median}}</td>
+                    <td><span class="trend"><svg width="64" height="20" viewBox="0 0 64 20" aria-hidden="true"><polyline points="{{m.pts}}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"></polyline></svg></span></td>
+                    <td><span class="links"><sc-for list="{{m.ev}}" as="e" hint-placeholder-count="2"><button type="button" class="tlink" onClick="{{e.go}}">#{{e.id}}</button></sc-for></span></td>
+                  </tr></sc-for>
+                </tbody>
+              </table></div>
+            </section>
+
+            <section class="sec2" aria-labelledby="h-rep">
+              <div class="sh"><span id="h-rep" class="label">Pattern to repeat</span></div>
+              <div class="ln"><p>You asked the agent to run the refund tests and fix what failed. The fix passed on the next run.</p><button type="button" class="tlink" onClick="{{go1426}}">#1426</button></div>
+            </section>
+
+            <section class="sec2" aria-labelledby="h-diag">
+              <div class="sh"><span id="h-diag" class="label">Diagnostics · not scored</span><button type="button" class="ulink" aria-expanded="{{diagOpen}}" onClick="{{toggleDiag}}">{{diagLabel}}</button></div>
+              <div class="diag mono"><span>active 6 h 12 m</span><span>overlap 29%</span><span>3 interruptions</span><span>context p90 71%</span><span>$20.50</span></div>
+              <sc-if value="{{diagOpen}}" hint-placeholder-val="{{ false }}">
+                <dl class="dl">
+                  <dt>Gaps between turns</dt><dd class="mono">&lt;30 s 41 · 30 s–2 m 18 · 2–5 m 9 · 5–15 m 6 · breaks 3</dd>
+                  <dt>Interruptions</dt><dd class="mono">3 · median 4 m of agent work before each</dd>
+                  <dt>Context used</dt><dd class="mono">p50 38% · p90 71%</dd>
+                  <dt>Tokens and cost</dt><dd><div class="models mono">
+                    <span>claude-opus-5-5</span><span class="num">1.92 M</span><span class="num">$12.10</span>
+                    <span>claude-sonnet-5-5</span><span class="num">0.81 M</span><span class="num">$2.30</span>
+                    <span>gpt-6-codex</span><span class="num">2.34 M</span><span class="num">$6.10</span>
+                  </div></dd>
+                  <dt>Most-used tools</dt><dd>
+                    <sc-for list="{{top5}}" as="k" hint-placeholder-count="5"><div class="sk" style="grid-template-columns: 150px minmax(0,1fr) 120px"><span class="mono" style="font-size: 14px">{{k.name}}</span><span class="skbar"><span class="sk-you" style="width: {{k.yw}}%"></span><span class="sk-agent" style="width: {{k.aw}}%"></span></span><span class="cnt mono">{{k.you}} you · {{k.agent}} agent</span></div></sc-for>
+                    <button type="button" class="ulink" onClick="{{goLeverage}}">All tooling in Leverage</button>
+                  </dd>
+                </dl>
+              </sc-if>
+            </section>
+          </sc-if>
+
+          <sc-if value="{{isSessions}}" hint-placeholder-val="{{ false }}">
+            <sc-if value="{{noSel}}" hint-placeholder-val="{{ true }}">
+              <section class="sec" aria-labelledby="h-flow">
+                <div class="sh"><span id="h-flow" class="label">Where today's turns ended</span><span class="muted" style="font-size: 14px">20 turns</span></div>
+                <svg class="flow" viewBox="0 0 760 140" role="img" aria-label="20 turns: 19 made edits, 1 needed no tests. Of the 19: 8 verified, 1 failed, 10 unverified." style="margin-top: 16px">
+                  <path d="M8 4 C154 4,154 4,300 4 L300 118 C154 118,154 118,8 118 Z" fill="currentColor" fill-opacity=".07"></path>
+                  <path d="M8 118 C154 118,154 126,300 126 L300 132 C154 132,154 124,8 124 Z" fill="currentColor" fill-opacity=".07"></path>
+                  <path d="M308 4 C454 4,454 4,600 4 L600 52 C454 52,454 52,308 52 Z" fill="var(--ok)" fill-opacity=".14"></path>
+                  <path d="M308 52 C454 52,454 58,600 58 L600 64 C454 64,454 58,308 58 Z" fill="var(--fail)" fill-opacity=".14"></path>
+                  <path d="M308 58 C454 58,454 70,600 70 L600 130 C454 130,454 118,308 118 Z" fill="currentColor" fill-opacity=".07"></path>
+                  <rect x="0" y="4" width="8" height="120" fill="currentColor"></rect>
+                  <rect x="300" y="4" width="8" height="114" fill="currentColor"></rect>
+                  <rect x="300" y="126" width="8" height="6" fill="var(--mid)"></rect>
+                  <rect x="600" y="4" width="8" height="48" fill="var(--ok)"></rect>
+                  <rect x="600" y="58" width="8" height="6" fill="var(--fail)"></rect>
+                  <rect x="600" y="70" width="8" height="60" fill="var(--mid)"></rect>
+                  <text x="16" y="68" font-size="14" fill="currentColor">20 turns</text>
+                  <text x="316" y="64" font-size="14" fill="currentColor">19 with edits</text>
+                  <text x="316" y="134" font-size="13" fill="var(--muted-fg)">1 needed no tests</text>
+                  <text x="616" y="32" font-size="14" fill="currentColor">8 verified</text>
+                  <text x="616" y="65" font-size="14" fill="currentColor">1 failed</text>
+                  <text x="616" y="104" font-size="14" fill="currentColor">10 unverified</text>
+                </svg>
+              </section>
+              <section class="sec" aria-label="Sessions">
+                <div class="tblwrap"><table class="tbl">
+                  <thead><tr><th>Session</th><th>Worktree</th><th>Time</th><th class="num">Turns</th><th class="num">Verified</th><th class="num">Blocked</th><th class="num">Cost</th></tr></thead>
+                  <tbody>
+                    <sc-for list="{{sessions}}" as="s" hint-placeholder-count="6"><tr>
+                      <td><button type="button" class="rowbtn" onClick="{{s.open}}"><span class="dot {{s.cls}}" aria-hidden="true"></span>{{s.agent}} · {{s.repo}}</button></td>
+                      <td class="mono muted" style="font-size: 14px">{{s.branch}}</td>
+                      <td class="mono">{{s.span}}</td>
+                      <td class="num mono">{{s.nTurns}}</td>
+                      <td class="num mono">{{s.ver}}</td>
+                      <td class="num mono">{{s.blocked}}</td>
+                      <td class="num mono">{{s.cost}}</td>
+                    </tr></sc-for>
+                  </tbody>
+                </table></div>
+              </section>
+            </sc-if>
+            <sc-if value="{{hasSel}}" hint-placeholder-val="{{ false }}">
+              <button type="button" class="back" onClick="{{clearSel}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>All sessions</button>
+              <div class="sechead" style="margin-top: 12px">
+                <h2><span class="dot {{sel.cls}}" style="display: inline-block; margin-right: 8px; vertical-align: 3px" aria-hidden="true"></span>{{sel.agent}} · {{sel.repo}}</h2>
+                <span class="muted mono">{{sel.branch}} · {{sel.span}} · {{sel.cost}}</span>
+              </div>
+              <p class="note" style="margin: 0 0 16px">{{sel.sum}}</p>
+              <div class="tblwrap"><table class="tbl">
+                <thead><tr><th>Turn</th><th>Start</th><th>Prompt</th><th>Tools</th><th>Verification</th><th class="num">Gap after</th></tr></thead>
+                <tbody>
+                  <sc-for list="{{sel.turns}}" as="t" hint-placeholder-count="4"><tr class="{{t.hl}}">
+                    <td class="mono">#{{t.id}}</td>
+                    <td class="mono">{{t.at}}</td>
+                    <td>{{t.prompt}}</td>
+                    <td class="mono muted" style="white-space: nowrap; font-size: 14px">{{t.tools}}</td>
+                    <td><span class="badge {{t.bcls}}">{{t.status}}</span></td>
+                    <td class="num mono">{{t.gap}}</td>
+                  </tr></sc-for>
+                </tbody>
+              </table></div>
+            </sc-if>
+          </sc-if>
+
+          <sc-if value="{{isTrends}}" hint-placeholder-val="{{ false }}">
+            <section class="sec" aria-label="Trends">
+              <div class="sechead"><h2>Last 14 days</h2><span class="muted">dashed line: 14-day median</span></div>
+              <div class="charts">
+                <sc-for list="{{charts}}" as="c" hint-placeholder-count="4"><div class="chart">
+                  <div class="head"><span>{{c.name}}</span><span class="mono">{{c.now}}</span></div>
+                  <svg viewBox="0 0 300 72" preserveAspectRatio="none" role="img" aria-label="{{c.name}}, last 14 days">
+                    <line x1="0" x2="300" y1="{{c.my}}" y2="{{c.my}}" stroke="currentColor" stroke-opacity=".35" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"></line>
+                    <polyline points="{{c.pts}}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline>
+                  </svg>
+                  <div class="mono muted" style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px"><span>1 Oct</span><span>14 Oct</span></div>
+                </div></sc-for>
+                <div class="chart">
+                  <div class="head"><span>Corrections by cause</span><span class="mono">5</span></div>
+                  <div class="cols" role="img" aria-label="Corrections per day by cause, last 14 days">
+                    <sc-for list="{{ccols}}" as="d" hint-placeholder-count="14"><div class="colstack"><div class="seg-i" style="height: {{d.o}}px; border-top: 1px solid var(--border)"></div><div class="seg-w" style="height: {{d.v}}px"></div><div class="seg-a" style="height: {{d.m}}px"></div></div></sc-for>
+                  </div>
+                  <div class="legend" style="margin-top: 6px"><span><i class="sw seg-a"></i>info missing</span><span><i class="sw seg-w"></i>instruction violated</span><span><i class="sw seg-i" style="border: 1px solid var(--border)"></i>other</span></div>
+                </div>
+              </div>
+            </section>
+            <section class="sec" aria-label="Daily values">
+              <div class="tblwrap"><table class="tbl">
+                <thead><tr><th>Day</th><th class="num">V</th><th class="num">H repair</th><th class="num">B</th><th class="num">C</th><th class="num">Active</th><th class="num">Cost</th></tr></thead>
+                <tbody>
+                  <sc-for list="{{days}}" as="d" hint-placeholder-count="7"><tr>
+                    <td>{{d.d}}</td><td class="num mono">{{d.v}}</td><td class="num mono">{{d.h}}</td><td class="num mono">{{d.b}}</td><td class="num mono">{{d.c}}</td><td class="num mono">{{d.a}}</td><td class="num mono">{{d.cost}}</td>
+                  </tr></sc-for>
+                </tbody>
+              </table></div>
+            </section>
+          </sc-if>
+
+          <sc-if value="{{isLeverage}}" hint-placeholder-val="{{ false }}">
+            <p class="note" style="margin-top: 24px">Context for the scored numbers. These depend on the agent and are easy to game, so they never count.</p>
+            <section class="sec" aria-labelledby="h-tool">
+              <div class="sechead"><h2 id="h-tool">Tooling</h2><span class="badge b-unv">not scored</span></div>
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 8px">
+                <div class="segc" role="group" aria-label="Category"><sc-for list="{{cats}}" as="c" hint-placeholder-count="4"><button type="button" class="{{c.cls}}" aria-pressed="{{c.on}}" onClick="{{c.pick}}">{{c.label}}</button></sc-for></div>
+                <div class="legend" style="margin-top: 0"><span><i class="sw sk-you"></i>by you</span><span><i class="sw sk-agent"></i>by the agent</span></div>
+              </div>
+              <sc-for list="{{tools}}" as="k" hint-placeholder-count="5"><div class="sk" style="border-bottom: 1px solid var(--border)"><span class="mono" style="font-size: 14px">{{k.name}}</span><span class="skbar"><span class="sk-you" style="width: {{k.yw}}%"></span><span class="sk-agent" style="width: {{k.aw}}%"></span></span><span class="cnt mono">{{k.you}} you · {{k.agent}} agent</span></div></sc-for>
+              <p class="note">Hooks and CLAUDE.md / AGENTS.md started 39 more calls on their own. Those count as default, not you or the agent.</p>
+            </section>
+            <section class="sec" aria-labelledby="h-sub">
+              <div class="sechead"><h2 id="h-sub">Subagents</h2><span class="badge b-unv">not scored</span></div>
+              <div class="tblwrap"><table class="tbl">
+                <thead><tr><th>Subagent</th><th class="num">Runs</th><th>Started by</th><th class="num">Median time</th><th>Model</th></tr></thead>
+                <tbody>
+                  <tr><td>Explore</td><td class="num mono">7</td><td>agent 6 · you 1</td><td class="num mono">1 m 40 s</td><td class="mono">claude-sonnet-5-5</td></tr>
+                  <tr><td>general-purpose</td><td class="num mono">4</td><td>agent 4</td><td class="num mono">3 m 05 s</td><td class="mono">claude-sonnet-5-5</td></tr>
+                  <tr><td>code-reviewer</td><td class="num mono">2</td><td>you 2</td><td class="num mono">2 m 20 s</td><td class="mono">claude-opus-5-5</td></tr>
+                </tbody>
+              </table></div>
+              <p class="note">Deepest nesting 2 · 22 min of subagent time ran alongside the parent.</p>
+            </section>
+          </sc-if>
+
+          <sc-if value="{{isCandidate}}" hint-placeholder-val="{{ false }}">
+            <section class="sec" aria-labelledby="h-cand">
+              <div class="sechead"><h2 id="h-cand">Candidate 07 · orders-service challenge</h2><span class="badge b-unv">read-only</span></div>
+              <p class="note" style="margin: 0">90 minutes on 9 Oct. Baseline: median of 11 engineers on the same challenge.</p>
+              <div style="margin-top: 16px; border-top: 1px solid var(--border)">
+                <sc-for list="{{cand}}" as="c" hint-placeholder-count="5"><div class="cand">
+                  <div><span class="mono">{{c.id}}</span>  {{c.name}}</div>
+                  <div>
+                    <div class="vals"><span><span class="label">Candidate</span><br><span class="mono">{{c.val}}</span></span><span><span class="label">Baseline</span><br><span class="mono muted">{{c.base}}</span></span></div>
+                    <p class="q">{{c.q}}</p>
+                  </div>
+                </div></sc-for>
+              </div>
+              <p class="note">Debrief questions, not gates. There is no score and no recommendation. A person read the transcript before any label here counted. The candidate sees this same page.</p>
+            </section>
+          </sc-if>
+        </div>
+      </main>
+      <aside class="{{asideClass}}" aria-label="Ask AI" aria-hidden="{{asideHidden}}">
+        <div class="ain">
+          <div class="ahead">
+            <span style="font-weight: 600">Ask scorer</span>
+            <span class="model">claude-opus-5-5</span>
+            <span style="flex: 1"></span>
+            <button type="button" class="ghost" aria-label="Close Ask AI" onClick="{{toggleAsk}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+          </div>
+          <div class="convo">
+            <sc-if value="{{isEmpty}}" hint-placeholder-val="{{ false }}">
+              <div class="empty">
+                <div class="tile"><svg class="i" style="width: 20px; height: 20px" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg></div>
+                <div style="display: flex; flex-direction: column; gap: 4px; align-items: center">
+                  <span style="font-weight: 600; font-size: 16px">Ask scorer</span>
+                  <span class="muted" style="font-size: 14px; max-width: 260px">Questions about your sessions, answered from scorer.db with the turns cited.</span>
+                </div>
+                <div class="chips">
+                  <button type="button" class="chip">Why did verification drop today?</button>
+                  <button type="button" class="chip">Which session kept me waiting longest?</button>
+                  <button type="button" class="chip">Where did I repair the agent's edits by hand?</button>
+                  <button type="button" class="chip">How does this week compare with last week?</button>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{isNoKey}}" hint-placeholder-val="{{ false }}">
+              <div class="empty">
+                <div class="tile"><svg class="i" style="width: 20px; height: 20px" viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.5" cy="15.5" r="5.5"></circle><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"></path></svg></div>
+                <div style="display: flex; flex-direction: column; gap: 4px; align-items: center">
+                  <span style="font-weight: 600; font-size: 16px">Ask scorer</span>
+                  <span class="muted" style="font-size: 14px; max-width: 280px">Needs an Anthropic API key. Set ANTHROPIC_API_KEY and restart scorer serve. The rest of the page works without it.</span>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{isConvo}}" hint-placeholder-val="{{ true }}">
+              <div class="msg-user">Why did verification drop today?</div>
+              <div class="msg-ai">
+                <button type="button" class="steps" aria-expanded="{{stepsOpen}}" onClick="{{toggleSteps}}">4 steps completed<svg class="i" style="width: 13px; height: 13px" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+                <sc-if value="{{stepsOpen}}" hint-placeholder-val="{{ false }}">
+                  <ol class="steplist">
+                    <li><svg class="i" viewBox="0 0 24 24" style="margin-top: 2px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><div><div class="t">Listed today's sessions</div><div class="s mono">list_sessions</div></div></li>
+                    <li><svg class="i" viewBox="0 0 24 24" style="margin-top: 2px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><div><div class="t">Read V for 14 Oct and the 7-day median</div><div class="s mono">get_metric</div></div></li>
+                    <li><svg class="i" viewBox="0 0 24 24" style="margin-top: 2px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><div><div class="t">turnInvestigator read 3 turns</div><div class="s">subagent · <span class="mono">get_turn #1441 · #1445 · #1426</span></div></div></li>
+                    <li><svg class="i" viewBox="0 0 24 24" style="margin-top: 2px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><div><div class="t">Counted unverified batches per session</div><div class="s mono">query_db</div></div></li>
+                  </ol>
+                </sc-if>
+                <p>Verification fell to 41%, 9 of 22 edit batches, against a 7-day median of 55%<button type="button" class="{{c1Class}}" aria-label="Source 1" onClick="{{c1}}">1</button>.</p>
+                <p>Most of the drop is one session. Codex in billing-api patched the rate limiter three times without a test run<button type="button" class="{{c2Class}}" aria-label="Source 2" onClick="{{c2}}">2</button>.</p>
+                <p>The checks that did run were not decorative. In #1426 a failing test led straight to a fix<button type="button" class="{{c3Class}}" aria-label="Source 3" onClick="{{c3}}">3</button>.</p>
+                <div class="rcard">
+                  <div class="rh"><span class="label">query_db · unverified batches</span><span class="mono muted" style="font-size: 12px">3 rows</span></div>
+                  <table><tbody>
+                    <tr><td>Codex · billing-api</td><td class="mono muted">feat/rate-limit</td><td class="num mono">4 of 5</td></tr>
+                    <tr><td>Claude · web-dashboard</td><td class="mono muted">main</td><td class="num mono">4 of 6</td></tr>
+                    <tr><td>Claude · billing-api</td><td class="mono muted">main</td><td class="num mono">2 of 5</td></tr>
+                  </tbody></table>
+                </div>
+                <p>For tomorrow: put the test command in the same prompt as the change, for example "… and run pnpm test rate-limit".</p>
+              </div>
+            </sc-if>
+          </div>
+          <div class="composer">
+            <label for="ask" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Ask scorer</label>
+            <textarea id="ask" rows="2" placeholder="{{placeholder}}" disabled="{{noKey}}" value="{{draft}}" onChange="{{onDraft}}"></textarea>
+            <button type="button" class="{{sendClass}}" aria-label="Send message"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7M12 19V5"></path></svg></button>
+          </div>
+          <sc-if value="{{peekOpen}}" hint-placeholder-val="{{ false }}">
+            <div class="peek">
+              <div class="ph">
+                <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+                  <span style="font-weight: 600; font-size: 15px">{{peek.title}}</span>
+                  <span class="mono muted" style="font-size: 12px">{{peek.path}}</span>
+                </div>
+                <button type="button" class="ghost" aria-label="Close source" onClick="{{closePeek}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+              </div>
+              <div class="pb">
+                <sc-if value="{{peek.hasTurn}}" hint-placeholder-val="{{ true }}"><button type="button" class="sm" onClick="{{peek.go}}">Open turn #{{peek.turn}}</button></sc-if>
+                <blockquote>{{peek.quote}}</blockquote>
+                <p class="mono muted" style="margin: 0; font-size: 13px">{{peek.detail}}</p>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["auto","light","dark"],"default":"auto"},"chat":{"editor":"enum","options":["conversation","empty","no-key"],"default":"conversation"},"askOpen":{"editor":"boolean","default":true},"$preview":{"width":1440,"height":1900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { tab: 'today', sel: null, focus: null, peek: 0, stepsOpen: false, theme: null, ask: null, hover: null, draft: '', diagOpen: false, cat: 'skills' };
+  }
+  pct(t) { const p = t.split(':'); return ((+p[0] - 9) * 60 + +p[1]) / 540 * 100; }
+  spark(arr, w, h, pad) {
+    const lo = Math.min.apply(null, arr), hi = Math.max.apply(null, arr), span = (hi - lo) || 1;
+    return arr.map((v, i) => (i * w / (arr.length - 1)).toFixed(1) + ',' + (h - pad - (v - lo) / span * (h - 2 * pad)).toFixed(1)).join(' ');
+  }
+  data() {
+    return [
+      { id: 's1', agent: 'Claude', cls: 'c-claude', repo: 'billing-api', branch: 'main', path: '~/code/billing-api', a: '09:10', b: '11:40', ver: '3 / 5', blocked: '6 m', cost: '$4.80', ticks: [],
+        sum: 'Idempotency keys for refunds over five turns. One correction: the key\'s merchant scope was never stated, so the first version keyed per user.', turns: [
+        { id: 1418, at: '09:12', prompt: 'Add idempotency keys to the refund endpoint', tools: 'Edit ×3 · pytest', st: 'ok', gap: '2 m' },
+        { id: 1420, at: '09:41', prompt: 'Handle the Retry-After header too', tools: 'Edit ×2', st: 'unv', gap: '6 m' },
+        { id: 1423, at: '10:20', prompt: 'Rename the migration, it collides with main', tools: 'Edit · git diff', st: 'unv', gap: '40 s' },
+        { id: 1426, at: '10:58', prompt: 'Run the refund tests and fix what fails', tools: 'pytest · Edit · pytest', st: 'fail', gap: '3 m' },
+        { id: 1430, at: '11:21', prompt: 'The key is per merchant, not per user', tools: 'Edit ×2 · pytest', st: 'ok', gap: '—' } ] },
+      { id: 's4', agent: 'Codex', cls: 'c-codex', repo: 'billing-api', branch: 'feat/rate-limit', path: '~/code/billing-api-wt/rate-limit', a: '13:40', b: '16:20', ver: '1 / 5', blocked: '18 m', cost: '$2.90', ticks: ['14:31'],
+        sum: 'Token-bucket rate limiter. Three patches ran without tests and one touched the webhook path. You asked for pnpm test at 15:10 and it passed.', turns: [
+        { id: 1441, at: '13:42', prompt: 'Port the rate limiter to a token bucket', tools: 'apply_patch ×3', st: 'unv', gap: '18 m' },
+        { id: 1445, at: '14:20', prompt: 'Read the limits from config, not constants', tools: 'apply_patch ×2', st: 'unv', gap: '11 m' },
+        { id: 1447, at: '14:35', prompt: 'That broke the webhook path, roll it back', tools: 'apply_patch', st: 'unv', gap: '9 m' },
+        { id: 1451, at: '15:10', prompt: 'Run pnpm test rate-limit and fix it', tools: 'pnpm test · apply_patch · pnpm test', st: 'ok', gap: '—' } ] },
+      { id: 's3', agent: 'Claude', cls: 'c-claude', repo: 'web-dashboard', branch: 'main', path: '~/code/web-dashboard', a: '13:05', b: '15:30', ver: '2 / 6', blocked: '9 m', cost: '$6.90', ticks: ['15:02'],
+        sum: 'InvoiceTable split into rows and toolbar. Two of four batches were checked with tsc; the last spacing change is still unverified.', turns: [
+        { id: 1433, at: '13:06', prompt: 'Split InvoiceTable into rows and toolbar', tools: 'Edit ×6 · tsc', st: 'ok', gap: '4 m' },
+        { id: 1436, at: '13:48', prompt: 'The toolbar overflows on mobile', tools: 'Edit ×2', st: 'unv', gap: '7 m' },
+        { id: 1440, at: '14:22', prompt: 'Use the existing Popover, not a new one', tools: 'Edit ×3 · tsc', st: 'ok', gap: '2 m' },
+        { id: 1444, at: '15:02', prompt: 'Wait, put the toolbar spacing back', tools: 'Edit', st: 'unv', gap: '—' } ] },
+      { id: 's2', agent: 'Codex', cls: 'c-codex', repo: 'web-dashboard', branch: 'feat/invoice-filters', path: '~/code/web-dashboard-wt/invoice-filters', a: '09:45', b: '12:10', ver: '2 / 4', blocked: '14 m', cost: '$3.20', ticks: ['10:52'],
+        sum: 'Date-range filter for invoices. You interrupted at 10:52 to keep the old query param, then the agent waited 14 minutes while you were in billing-api.', turns: [
+        { id: 1419, at: '09:47', prompt: 'Add a date-range filter to the invoices table', tools: 'apply_patch ×2 · vitest', st: 'ok', gap: '9 m' },
+        { id: 1422, at: '10:31', prompt: 'Keep the filter in the URL', tools: 'apply_patch', st: 'unv', gap: '14 m' },
+        { id: 1425, at: '10:55', prompt: 'Stop, keep the old query param name', tools: 'apply_patch · vitest', st: 'ok', gap: '5 m' },
+        { id: 1429, at: '11:40', prompt: 'Fix the empty-state copy', tools: 'apply_patch', st: 'unv', gap: '—' } ] },
+      { id: 's5', agent: 'Claude', cls: 'c-claude', repo: 'infra-terraform', branch: 'main', path: '~/code/infra-terraform', a: '16:00', b: '17:15', ver: '1 / 2', blocked: '0 m', cost: '$2.40', ticks: [],
+        sum: 'Staging alarm for 5xx, checked with terraform validate. The team tags came afterwards and were never planned.', turns: [
+        { id: 1455, at: '16:02', prompt: 'Add a staging alarm for 5xx above 2%', tools: 'Edit · terraform validate', st: 'ok', gap: '3 m' },
+        { id: 1457, at: '16:40', prompt: 'Tag every alarm with the owning team', tools: 'Edit ×4', st: 'unv', gap: '—' } ] },
+      { id: 's6', agent: 'Claude', cls: 'c-claude', repo: 'dotfiles', branch: 'main', path: '~/dotfiles', a: '17:30', b: '17:50', ver: '0 / 0', blocked: '0 m', cost: '$0.30', ticks: [],
+        sum: 'One config edit, an alias for the daily report. Nothing to verify.', turns: [
+        { id: 1460, at: '17:31', prompt: 'Add an alias for scorer report --day today', tools: 'Edit', st: 'na', gap: '—' } ] }
+    ];
+  }
+  renderVals() {
+    const theme = this.state.theme || this.props.theme || 'auto';
+    const askOpen = this.state.ask === null ? (this.props.askOpen ?? true) : this.state.ask;
+    const chat = this.props.chat || 'conversation';
+    const S = this.data();
+    const tab = this.state.tab;
+    const sessionOf = {};
+    S.forEach((s) => s.turns.forEach((t) => { sessionOf[t.id] = s.id; }));
+    const goTurn = (id) => () => this.setState({ tab: 'sessions', sel: sessionOf[id], focus: id, peek: 0 });
+    const ST = { ok: ['verified', 'b-ok'], unv: ['unverified', 'b-unv'], fail: ['failed', 'b-fail'], na: ['no tests needed', 'b-na'] };
+    const sessions = S.map((s) => Object.assign({}, s, {
+      l: this.pct(s.a).toFixed(2), w: (this.pct(s.b) - this.pct(s.a)).toFixed(2),
+      span: s.a + '–' + s.b, nTurns: s.turns.length,
+      ticks: s.ticks.map((k) => ({ l: this.pct(k).toFixed(2) })),
+      open: () => this.setState({ sel: s.id, focus: null }),
+      turns: s.turns.map((t) => Object.assign({}, t, { status: ST[t.st][0], bcls: ST[t.st][1], hl: t.id === this.state.focus ? 'hl' : '' }))
+    }));
+    const tlrows = []; let y = 0; let last = null; const tops = {};
+    sessions.forEach((s) => {
+      if (s.repo !== last) { tlrows.push({ isG: true, isS: false, repo: s.repo }); y += 28; last = s.repo; }
+      tops[s.id] = y;
+      tlrows.push(Object.assign({}, s, { isG: false, isS: true, barCls: this.state.hover === s.id ? 'bar on' : 'bar', hover: () => { if (this.state.hover !== s.id) this.setState({ hover: s.id }); } }));
+      y += 32;
+    });
+    const hv = sessions.find((s) => s.id === this.state.hover);
+    const pop = hv ? {
+      top: tops[hv.id] + 30, left: 'min(calc(200px + (100% - 200px) * ' + (hv.l / 100).toFixed(3) + '), calc(100% - 320px))',
+      agent: hv.agent, repo: hv.repo, path: hv.path + ' · ' + hv.branch, span: hv.span, sum: hv.sum,
+      ask: () => this.setState({ ask: true, hover: null, peek: 0, draft: 'What happened in ' + hv.agent + ' · ' + hv.repo + ' (' + hv.branch + ') between ' + hv.span + '?' })
+    } : {};
+    const overlaps = [['09:45', '11:40'], ['13:40', '15:30'], ['16:00', '16:20']].map((o) => ({ l: this.pct(o[0]).toFixed(2), w: (this.pct(o[1]) - this.pct(o[0])).toFixed(2) }));
+    const hours = []; for (let h = 9; h <= 18; h++) hours.push({ t: String(h).padStart(2, '0'), l: ((h - 9) / 9 * 100).toFixed(2) });
+    const strip = [[40, 5], [55, 5], [45, 10], [10, 0], [45, 12], [50, 8], [48, 4], [40, 3], [25, 0]].map((v, i) => ({ t: String(9 + i).padStart(2, '0'), a: (v[0] / 60 * 100).toFixed(1), w: (v[1] / 60 * 100).toFixed(1), i: ((60 - v[0] - v[1]) / 60 * 100).toFixed(1) }));
+    const ev = (ids) => ids.map((id) => ({ id: id, go: goTurn(id) }));
+    const metrics = [
+      { id: 'B', name: 'Blocked-agent minutes', today: '47 m', median: '22 m', s: [18, 25, 22, 30, 14, 20, 47], ev: ev([1441, 1422]) },
+      { id: 'C', name: 'Correction episodes', today: '5', median: '4', s: [4, 5, 3, 4, 6, 4, 5], ev: ev([1430, 1447]) },
+      { id: 'V', name: 'Verification after changes', today: '41%', median: '55%', s: [58, 52, 61, 55, 49, 57, 41], ev: ev([1441, 1426]) },
+      { id: 'H', name: 'Hand-edits, repair', today: '31 lines', median: '18 lines', s: [12, 20, 18, 9, 25, 16, 31], ev: ev([1447]) }
+    ].map((m) => Object.assign(m, { pts: this.spark(m.s, 64, 20, 2) }));
+    const series = [
+      { name: 'V · verification', now: '41%', s: [62, 48, 55, 59, 51, 60, 57, 58, 52, 61, 55, 49, 57, 41] },
+      { name: 'B · blocked minutes', now: '47 m', s: [12, 28, 19, 24, 16, 21, 33, 18, 25, 22, 30, 14, 20, 47] },
+      { name: 'Active hours', now: '6.2 h', s: [5.8, 6.4, 2.1, 0.5, 6.1, 5.5, 6.9, 6.0, 5.9, 6.8, 1.5, 2.1, 5.7, 6.2] },
+      { name: '$ per day', now: '$20.50', s: [17, 21, 6, 2, 19, 16, 24, 18, 19, 22, 4, 6, 18, 20.5] }
+    ];
+    const charts = series.map((c) => {
+      const sorted = c.s.slice().sort((a, b) => a - b), med = (sorted[6] + sorted[7]) / 2;
+      const lo = sorted[0], hi = sorted[13], span = (hi - lo) || 1;
+      return Object.assign({}, c, { pts: this.spark(c.s, 300, 72, 6), my: (72 - 6 - (med - lo) / span * 60).toFixed(1) });
+    });
+    const ccols = [[2, 1, 0], [3, 1, 1], [2, 1, 1], [1, 0, 1], [4, 1, 1], [2, 1, 1], [2, 0, 1], [3, 1, 0], [3, 1, 1], [2, 0, 1], [2, 1, 1], [4, 1, 1], [2, 1, 1], [3, 1, 1]].map((d) => ({ m: d[0] * 10, v: d[1] * 10, o: d[2] * 10 }));
+    const days = [
+      { d: 'Tue 14 Oct', v: '41%', h: '31', b: '47 m', c: '5', a: '6 h 12 m', cost: '$20.50' },
+      { d: 'Mon 13 Oct', v: '57%', h: '16', b: '20 m', c: '4', a: '5 h 40 m', cost: '$17.80' },
+      { d: 'Sun 12 Oct', v: '49%', h: '25', b: '14 m', c: '6', a: '2 h 05 m', cost: '$6.10' },
+      { d: 'Sat 11 Oct', v: '55%', h: '9', b: '30 m', c: '4', a: '1 h 30 m', cost: '$4.20' },
+      { d: 'Fri 10 Oct', v: '61%', h: '18', b: '22 m', c: '3', a: '6 h 48 m', cost: '$22.30' },
+      { d: 'Thu 9 Oct', v: '52%', h: '20', b: '25 m', c: '5', a: '5 h 55 m', cost: '$19.00' },
+      { d: 'Wed 8 Oct', v: '58%', h: '12', b: '18 m', c: '4', a: '6 h 02 m', cost: '$18.40' }
+    ];
+    const TOOLS = {
+      skills: [['review', 3, 6], ['tdd', 2, 5], ['frontend-design', 0, 4], ['investigate', 1, 2], ['pdf', 0, 1]],
+      commands: [['/compact', 4, 0], ['/clear', 3, 0], ['/review', 2, 0], ['/init', 1, 0]],
+      mcp: [['github', 1, 7], ['linear', 0, 3], ['context7', 0, 2]],
+      plugins: [['playwright', 0, 2], ['sentry', 1, 1]]
+    };
+    const bars = (rows, max) => rows.map((r) => ({ name: r[0], you: r[1], agent: r[2], yw: (r[1] / max * 100).toFixed(1), aw: (r[2] / max * 100).toFixed(1) }));
+    const cur = TOOLS[this.state.cat];
+    const tools = bars(cur, Math.max.apply(null, cur.map((r) => r[1] + r[2])));
+    const all = [].concat(TOOLS.skills, TOOLS.commands, TOOLS.mcp, TOOLS.plugins).sort((a, b) => (b[1] + b[2]) - (a[1] + a[2])).slice(0, 5);
+    const top5 = bars(all, all[0][1] + all[0][2]);
+    const cats = [['skills', 'Skills'], ['commands', 'Commands'], ['mcp', 'MCP'], ['plugins', 'Plugins']].map((c) => ({ label: c[1], on: this.state.cat === c[0] ? 'true' : 'false', cls: this.state.cat === c[0] ? 'on' : '', pick: () => this.setState({ cat: c[0] }) }));
+    const cand = [
+      { id: 'V', name: 'Verification after changes', val: '3 of 7 batches', base: '5 of 7', q: 'How did you know the cursor change worked before you moved on?' },
+      { id: 'E', name: 'Response to evidence', val: 'Re-ran the flaky test twice, then read the fixture', base: 'investigated: 8 of 11', q: 'What told you the second failure was the test and not your code?' },
+      { id: 'C', name: 'Correction episodes', val: '1 clarification · 1 info missing', base: '2', q: 'When the README flag did nothing, how did you find out?' },
+      { id: 'H', name: 'Hand-edits outside the agent', val: '22 own · 4 repair', base: '9 own · 6 repair', q: 'Which parts did you write yourself, and why those?' },
+      { id: 'B', name: 'Blocked-agent minutes', val: '6 m', base: '4 m', q: 'While the agent waited on you, what were you checking?' }
+    ];
+    const tabs = [['today', 'Today'], ['sessions', 'Sessions'], ['trends', 'Trends'], ['leverage', 'Leverage'], ['candidate', 'Candidate']].map((t) => ({
+      label: t[1], cls: tab === t[0] ? 'tab on' : 'tab', cur: tab === t[0] ? 'page' : 'false',
+      pick: () => this.setState({ tab: t[0], sel: null, focus: null, hover: null })
+    }));
+    const sel = sessions.find((s) => s.id === this.state.sel) || sessions[1];
+    const peeks = {
+      1: { title: 'Metric V · 14 Oct', path: 'get_metric · definition v1', quote: 'V = 9 / 22 edit batches verified (41%).\n7-day median 55%.', detail: 'verified 7 · failed 2 · unverified 13', turn: 0 },
+      2: { title: 'Turn #1441', path: 'billing-api · feat/rate-limit · Codex · 13:42', quote: '"Port the rate limiter to a token bucket"', detail: 'apply_patch ×3 · no test or build before the next prompt', turn: 1441 },
+      3: { title: 'Turn #1426', path: 'billing-api · main · Claude Code · 10:58', quote: '"Run the refund tests and fix what fails"', detail: 'pytest failed → Edit → pytest passed', turn: 1426 },
+      11: { title: 'Metric B · 14 Oct', path: 'get_metric · definition v1', quote: 'B = 47 min blocked. 7-day median 22 min.\nfeat/rate-limit 18 · feat/invoice-filters 14 · web-dashboard main 9 · billing-api main 6', detail: 'Stop → next prompt while another session was active', turn: 1441 },
+      12: peeks1(),
+      13: { title: 'Turn #1451', path: 'billing-api · feat/rate-limit · Codex · 15:10', quote: '"Run pnpm test rate-limit and fix it"', detail: 'first test run after 3 patches · pass after 1 fix', turn: 1451 },
+      14: { title: 'Turn #1430', path: 'billing-api · main · Claude Code · 11:21', quote: '"The key is per merchant, not per user"', detail: 'judge: correction · cause info missing · caught by human review', turn: 1430 }
+    };
+    function peeks1() { return { title: 'Metric V · 14 Oct', path: 'get_metric · definition v1', quote: 'V = 9 / 22 edit batches verified (41%).\n7-day median 55%.', detail: 'verified 7 · failed 2 · unverified 13', turn: 0 }; }
+    const pk = peeks[this.state.peek] || peeks[1];
+    const cite = (n) => () => this.setState({ peek: n, ask: true });
+    const cc = (n) => this.state.peek === n ? 'cite on' : 'cite';
+    const go = {}; [1430, 1447, 1444, 1426, 1441, 1422].forEach((id) => { go['go' + id] = goTurn(id); });
+    const draft = this.state.draft;
+    return Object.assign(go, {
+      rootClass: 'root t-' + theme,
+      themeLabel: theme === 'dark' ? 'light' : 'dark',
+      toggleTheme: () => this.setState({ theme: theme === 'dark' ? 'light' : 'dark' }),
+      askOpen: askOpen ? 'true' : 'false',
+      askClass: askOpen ? 'btn on' : 'btn',
+      asideClass: askOpen ? 'aside open' : 'aside',
+      asideHidden: askOpen ? 'false' : 'true',
+      toggleAsk: () => this.setState({ ask: !askOpen }),
+      tabs: tabs,
+      isToday: tab === 'today', isSessions: tab === 'sessions', isTrends: tab === 'trends', isLeverage: tab === 'leverage', isCandidate: tab === 'candidate',
+      sessions: sessions, tlrows: tlrows, overlaps: overlaps, hours: hours, strip: strip, metrics: metrics, charts: charts, ccols: ccols, days: days, cand: cand,
+      tools: tools, top5: top5, cats: cats,
+      goLeverage: () => this.setState({ tab: 'leverage' }),
+      hasHover: !!hv, pop: pop, clearHover: () => { if (this.state.hover) this.setState({ hover: null }); },
+      diagOpen: this.state.diagOpen, diagLabel: this.state.diagOpen ? 'Less' : 'More',
+      toggleDiag: () => this.setState({ diagOpen: !this.state.diagOpen }),
+      noSel: !this.state.sel, hasSel: !!this.state.sel, sel: sel,
+      clearSel: () => this.setState({ sel: null, focus: null }),
+      isConvo: chat === 'conversation', isEmpty: chat === 'empty', isNoKey: chat === 'no-key', noKey: chat === 'no-key',
+      placeholder: chat === 'no-key' ? 'API key required' : 'Ask about your sessions…',
+      draft: draft, onDraft: (e) => this.setState({ draft: e.target.value }),
+      sendClass: draft ? 'send on' : 'send',
+      stepsOpen: this.state.stepsOpen,
+      toggleSteps: () => this.setState({ stepsOpen: !this.state.stepsOpen }),
+      c1: cite(1), c2: cite(2), c3: cite(3), c1Class: cc(1), c2Class: cc(2), c3Class: cc(3),
+      n1: cite(11), n2: cite(12), n3: cite(13), n4: cite(14), n1Class: cc(11), n2Class: cc(12), n3Class: cc(13), n4Class: cc(14),
+      peekOpen: this.state.peek > 0 && chat === 'conversation',
+      peek: Object.assign({}, pk, { hasTurn: pk.turn > 0, go: goTurn(pk.turn || 1441) }),
+      closePeek: () => this.setState({ peek: 0 })
+    });
+  }
+}
+</script>
+</body>
+</html>

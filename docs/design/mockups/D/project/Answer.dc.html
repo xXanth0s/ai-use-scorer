@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ask AI · answer, steps open</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&amp;family=DM+Mono:wght@300;400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.root{--bg:#ffffff;--fg:#1c2d22;--card:#fefcf8;--muted:#f7f7f5;--muted-fg:#4d5a4d;--accent:#f0efed;--border:#ddd9d3;--primary:#1c2d22;--primary-fg:#ffffff;--pine:#1c2d22;--grass:#316c5a;--salmon:#ffb299;--claude:#b36813;--codex:#0369a1;--ok:#316c5a;--ok-bg:#e6edeb;--fail:#802d11;--fail-bg:#f1e7e2;--pill:rgba(28,45,34,.1);--shade:rgba(28,45,34,.06);--mid:#8a958a;--r:8px}
+.root.t-dark{--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--muted-fg:#a1a1a1;--accent:#262626;--border:rgba(255,255,255,.1);--primary:#e5e5e5;--primary-fg:#171717;--grass:#4ade80;--claude:#c98a3f;--codex:#38bdf8;--ok:#4ade80;--ok-bg:rgba(74,222,128,.12);--fail:#f0a58a;--fail-bg:rgba(240,165,138,.12);--pill:rgba(255,255,255,.1);--shade:rgba(255,255,255,.06);--mid:#737373}
+@media (prefers-color-scheme: dark){.root.t-auto{--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--muted-fg:#a1a1a1;--accent:#262626;--border:rgba(255,255,255,.1);--primary:#e5e5e5;--primary-fg:#171717;--grass:#4ade80;--claude:#c98a3f;--codex:#38bdf8;--ok:#4ade80;--ok-bg:rgba(74,222,128,.12);--fail:#f0a58a;--fail-bg:rgba(240,165,138,.12);--pill:rgba(255,255,255,.1);--shade:rgba(255,255,255,.06);--mid:#737373}}
+.root{background:var(--bg);color:var(--fg);font-family:'GT America Standard','GT America','Public Sans',ui-sans-serif,system-ui,sans-serif;font-size:15px;line-height:1.6;min-height:100vh;-webkit-font-smoothing:antialiased}
+.root *{box-sizing:border-box}
+.mono{font-family:'GT America Mono','DM Mono',ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+.muted{color:var(--muted-fg)}
+.label{font-family:'GT America Mono','DM Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted-fg)}
+button,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.shell{display:flex;min-height:100vh}
+.rail{width:48px;flex:none;background:#1c2d22;display:flex;flex-direction:column;align-items:center;gap:8px;padding:8px 0}
+.mark{width:32px;height:32px;border-radius:6px;background:#f9f2e7;color:#1c2d22;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;margin-bottom:8px}
+.railbtn{width:32px;height:32px;border-radius:6px;border:0;background:transparent;color:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.railbtn.on{background:rgba(255,255,255,.1);color:#fff}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.hdr{height:48px;flex:none;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:0 24px;background:var(--bg)}
+.crumbs{display:flex;align-items:center;gap:8px;font-size:14px;flex:1;min-width:0}
+.sep{width:1px;height:16px;background:var(--border)}
+.ghost{width:32px;height:32px;border:0;border-radius:6px;background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fg)}
+.ghost:hover{background:var(--accent)}
+.avatar{width:28px;height:28px;border-radius:9999px;background:var(--muted);border:1px solid var(--border);font-size:12px;display:flex;align-items:center;justify-content:center;font-weight:500}
+.row{display:flex;flex:1;min-height:0}
+.content{flex:1;min-width:0;padding:32px}
+.col{max-width:920px}
+.titlerow{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+h1{font-family:'Oceanic Text','GT America Standard','Public Sans',sans-serif;font-size:24px;font-weight:600;line-height:1.3;margin:0}
+h2{font-family:'Oceanic Text','GT America Standard','Public Sans',sans-serif;font-size:18px;font-weight:600;line-height:1.4;margin:0}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btn{height:36px;padding:0 16px;border-radius:6px;border:1px solid var(--border);background:var(--bg);font-size:14px;font-weight:500;display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:var(--fg)}
+.btn:hover{background:var(--accent)}
+.btn.on{background:var(--primary);border-color:var(--primary);color:var(--primary-fg)}
+.tabs{display:flex;gap:24px;border-bottom:1px solid var(--border);margin-top:24px;overflow-x:auto}
+.tab{border:0;background:none;padding:10px 0;font-size:15px;font-weight:500;color:var(--muted-fg);cursor:pointer;box-shadow:inset 0 -2px 0 transparent;white-space:nowrap}
+.tab:hover{color:var(--fg)}
+.tab.on{color:var(--fg);box-shadow:inset 0 -2px 0 var(--fg)}
+.sec{margin-top:40px}
+.sechead{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+.verdict{font-size:20px;line-height:1.5;margin:32px 0 0;max-width:46em;text-wrap:pretty}
+.change{margin-top:20px;display:flex;flex-direction:column;gap:4px}
+.change p{margin:0;font-size:16px;max-width:46em}
+.tlink{border:0;background:none;padding:0;cursor:pointer;font-family:'GT America Mono','DM Mono',monospace;font-size:14px;color:var(--fg);text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:3px}
+.tlink:hover{text-decoration-color:var(--fg)}
+.links{display:inline-flex;gap:10px;flex-wrap:wrap}
+
+
+.dot{width:8px;height:8px;border-radius:9999px;flex:none}
+.c-claude{background:var(--claude)}
+.c-codex{background:var(--codex)}
+
+
+
+
+.tick{position:absolute;top:9px;width:2px;height:14px;background:var(--fg);margin-left:-1px}
+.axis{position:relative;height:24px;border-top:1px solid var(--border)}
+.axis span{position:absolute;top:4px;transform:translateX(-50%);font-size:12px;color:var(--muted-fg)}
+.legend{display:flex;gap:20px;flex-wrap:wrap;font-size:13px;color:var(--muted-fg);margin-top:8px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:14px;height:6px;border-radius:3px}
+.sw-ovl{width:14px;height:12px;background:var(--shade);border:1px solid var(--border)}
+.sw-tick{width:2px;height:12px;background:var(--fg)}
+.tblwrap{overflow-x:auto}
+.tbl{width:100%;border-collapse:collapse;font-size:15px}
+.tbl th{text-align:left;font-weight:500;font-size:13px;color:var(--muted-fg);padding:8px 12px 8px 0;border-bottom:1px solid var(--border);white-space:nowrap}
+.tbl td{padding:12px 12px 12px 0;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl tr.hl td{background:var(--muted)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.tbl th.num{text-align:right}
+.trend{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.trend svg{overflow:visible}
+.rowbtn{border:0;background:none;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:8px;text-align:left;font-size:15px}
+.rowbtn:hover{text-decoration:underline;text-underline-offset:3px}
+.dl{display:grid;grid-template-columns:220px minmax(0,1fr);margin:0}
+.dl dt,.dl dd{padding:10px 0;border-bottom:1px solid var(--border);margin:0}
+.dl dt{color:var(--muted-fg)}
+.models{display:grid;grid-template-columns:minmax(0,1fr) auto auto;column-gap:24px}
+.badge{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:9999px;font-size:12px;font-weight:500;white-space:nowrap;border:1px solid transparent}
+.b-ok{background:var(--ok-bg);color:var(--ok)}
+.b-fail{background:var(--fail-bg);color:var(--fail)}
+.b-unv{border-color:var(--border);color:var(--muted-fg)}
+.b-na{color:var(--muted-fg)}
+.back{border:0;background:none;padding:0;cursor:pointer;display:inline-flex;align-items:center;gap:4px;color:var(--muted-fg);font-size:14px;margin-top:24px}
+.back:hover{color:var(--fg)}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:32px 40px}
+.chart svg{width:100%;height:72px;display:block}
+.chart .head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;font-size:15px}
+.note{font-size:15px;color:var(--muted-fg);margin:8px 0 0;max-width:46em}
+.cand{display:grid;grid-template-columns:200px minmax(0,1fr);column-gap:24px;padding:20px 0;border-bottom:1px solid var(--border)}
+.cand .vals{display:flex;gap:32px;flex-wrap:wrap}
+.cand .q{margin:8px 0 0;font-size:15px}
+.aside{width:0;flex:none;overflow:hidden;border-left:1px solid var(--border);background:var(--bg);transition:width .3s ease-in-out}
+.aside.open{width:28rem}
+.ain{width:28rem;max-width:100vw;position:sticky;top:0;height:min(100vh,860px);display:flex;flex-direction:column}
+.ahead{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--border)}
+.model{font-family:'GT America Mono','DM Mono',monospace;font-size:11px;color:var(--muted-fg);border:1px solid var(--border);border-radius:9999px;padding:1px 8px}
+.convo{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:32px}
+.msg-user{margin-left:auto;max-width:95%;background:var(--primary);color:var(--primary-fg);border-radius:8px;padding:12px 16px;font-size:15px}
+.msg-ai{max-width:95%;display:flex;flex-direction:column;gap:12px;font-size:15px}
+.msg-ai p{margin:0}
+.steps{border:0;background:none;padding:0;cursor:pointer;color:var(--muted-fg);display:inline-flex;align-items:center;gap:6px;font-size:14px;width:fit-content}
+.steps:hover{color:var(--fg)}
+.steplist{list-style:none;margin:0;padding:2px 0 0 8px;display:flex;flex-direction:column;gap:8px}
+.steplist li{display:flex;gap:12px}
+.steplist .t{font-size:14px;font-weight:500;line-height:1.4}
+.steplist .s{font-size:13px;color:var(--muted-fg);line-height:1.4}
+.cite{display:inline-flex;align-items:center;justify-content:center;height:16px;min-width:16px;padding:0 4px;margin:0 2px;border-radius:9999px;border:0;background:var(--pill);color:var(--fg);font-family:'GT America Mono','DM Mono',monospace;font-size:11px;font-weight:500;line-height:1;vertical-align:super;cursor:pointer}
+.cite:hover,.cite.on{background:var(--primary);color:var(--primary-fg)}
+.empty{display:flex;flex-direction:column;align-items:center;gap:16px;padding:48px 0;text-align:center}
+.tile{width:40px;height:40px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--muted-fg);display:flex;align-items:center;justify-content:center}
+.chips{display:flex;flex-direction:column;gap:8px;width:100%;max-width:300px}
+.chip{border:0;background:none;padding:6px 0;text-align:left;font-size:15px;cursor:pointer;color:var(--fg)}
+.chip:hover{color:var(--grass)}
+.composer{flex:none;border-top:1px solid var(--border);display:flex;align-items:flex-end;gap:8px;padding:8px 12px}
+.composer textarea{flex:1;min-height:36px;resize:none;border:0;background:transparent;outline:none;padding:8px 0;font-size:15px}
+.composer textarea::placeholder{color:var(--muted-fg)}
+.send{width:32px;height:32px;border-radius:9999px;border:0;background:var(--muted);color:var(--muted-fg);display:flex;align-items:center;justify-content:center;margin-bottom:2px}
+.peek{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;z-index:5}
+.peek .ph{border-bottom:1px solid var(--border);padding:12px 16px;display:flex;justify-content:space-between;gap:8px}
+.peek .pb{padding:12px 16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto}
+.peek blockquote{margin:0;border-left:2px solid var(--salmon);padding-left:12px;font-size:15px;white-space:pre-wrap}
+.sm{height:30px;padding:0 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;width:fit-content;color:var(--muted-fg)}
+.sm:hover{color:var(--fg);border-color:var(--grass)}
+@media (max-width:900px){.rail{display:none}.content{padding:20px 16px}.tlrow{grid-template-columns:132px minmax(0,1fr)}.ovlwrap{left:132px}.sk{grid-template-columns:110px minmax(0,1fr)}.sk .cnt{grid-column:1 / -1}.dl,.cand{grid-template-columns:minmax(0,1fr)}.dl dt{border-bottom:0;padding-bottom:0}.aside.open{position:fixed;inset:0;width:100%;z-index:20}}
+
+.report{list-style:decimal;margin:32px 0 0;padding-left:24px;display:flex;flex-direction:column;gap:18px;max-width:46em}
+.report li{padding-left:8px}
+.report li::marker{font-family:'GT America Mono','DM Mono',monospace;color:var(--muted-fg);font-size:14px}
+.report p{margin:0 0 4px;text-wrap:pretty}
+.report .lead{font-size:20px;line-height:1.5}
+.tlwrap{position:relative}
+.tlrow{display:grid;grid-template-columns:200px minmax(0,1fr)}
+.tlrow.g{height:28px;align-items:end}
+.g-lbl{font-size:14px;font-weight:600;padding-bottom:2px}
+.g-trk{height:100%;border-bottom:1px solid var(--border)}
+.tl-lbl{height:32px;display:flex;align-items:center;gap:8px;font-size:15px;white-space:nowrap;overflow:hidden;padding-left:16px}
+.track{position:relative;height:32px}
+.ovlwrap{position:absolute;left:200px;right:0;top:0;bottom:24px;pointer-events:none}
+.ovl{position:absolute;top:0;bottom:0;background:var(--shade)}
+.bar{position:absolute;top:8px;height:16px;border:0;padding:0;background:transparent;cursor:pointer}
+.line{display:block;height:6px;margin-top:5px;border-radius:3px}
+.bar:hover .line,.bar.on .line{height:8px;margin-top:4px}
+.pop{position:absolute;width:320px;max-width:calc(100% - 16px);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px;z-index:4;box-shadow:0 4px 12px rgba(0,0,0,.08);display:flex;flex-direction:column;gap:6px}
+.pop p{margin:0;font-size:15px;line-height:1.5}
+.ulink{border:0;background:none;padding:0;cursor:pointer;font-size:14px;font-weight:500;color:var(--fg);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--border);width:fit-content}
+.ulink:hover{text-decoration-color:var(--fg)}
+.strip{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:2px}
+.hr{display:flex;flex-direction:column;height:48px}
+.seg-a{background:var(--fg)}
+.seg-w{background:var(--mid)}
+.seg-i{background:var(--accent)}
+.sk{display:grid;grid-template-columns:180px minmax(0,1fr) 150px;gap:12px;align-items:center;padding:7px 0}
+.skbar{display:flex;height:8px;gap:1px}
+.sk-you{background:var(--fg)}
+.sk-agent{background:var(--mid)}
+.cnt{font-size:14px;color:var(--muted-fg);text-align:right}
+.segc{display:inline-flex;gap:2px;border:1px solid var(--border);border-radius:9999px;padding:3px;background:var(--muted)}
+.segc button{border:0;background:none;border-radius:9999px;padding:4px 14px;font-family:'GT America Mono','DM Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-fg);cursor:pointer}
+.segc button.on{background:var(--primary);color:var(--primary-fg)}
+.cols{display:grid;grid-template-columns:repeat(14,minmax(0,1fr));gap:2px;height:72px;align-items:end}
+.colstack{display:flex;flex-direction:column;justify-content:flex-end}
+.rcard{border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.rcard .rh{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.rcard table{width:100%;border-collapse:collapse;font-size:14px}
+.rcard td{padding:6px 12px;border-bottom:1px solid var(--border)}
+.rcard tr:last-child td{border-bottom:0}
+.send.on{background:var(--primary);color:var(--primary-fg);cursor:pointer}
+.flow{width:100%;max-width:760px;height:auto;display:block}
+
+.board{width:448px;height:820px;border-left:1px solid var(--border);display:flex;flex-direction:column;position:relative;overflow:hidden;min-height:0}
+.stop{background:var(--fg);color:var(--bg);cursor:pointer}
+.caret{display:inline-block;width:7px;height:16px;background:var(--fg);vertical-align:-2px;margin-left:2px;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+.sub{list-style:none;margin:6px 0 0;padding:0 0 0 2px;display:flex;flex-direction:column;gap:4px}
+.sub li{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--muted-fg)}
+.shimmer{color:var(--muted-fg);font-size:14px}
+</style>
+</helmet>
+<div class="{{rootClass}}" style="min-height: 0">
+  <aside class="board" aria-label="Ask AI">
+    <div class="ahead">
+      <span style="font-weight: 600">Ask scorer</span>
+      <span class="model">claude-opus-5-5</span>
+      <span style="flex: 1"></span>
+      <button type="button" class="ghost" aria-label="Close Ask AI"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+    </div>
+    <div class="convo">
+      <div class="msg-user">Why did verification drop today?</div>
+      <div class="msg-ai">
+        <button type="button" class="steps" aria-expanded="true">4 steps completed<svg class="i" style="width: 13px; height: 13px; transform: rotate(180deg)" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+        <ol class="steplist">
+          <li><svg class="i" viewBox="0 0 24 24" style="margin-top: 2px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><div><div class="t">Listed today's sessions</div><div class="s mono">list_sessions</div></div></li>
+          <li><svg class="i" viewBox="0 0 24 24" style="margin-top: 2px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><div><div class="t">Read V for 14 Oct and the 7-day median</div><div class="s mono">get_metric</div></div></li>
+          <li><svg class="i" viewBox="0 0 24 24" style="margin-top: 2px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><div><div class="t">turnInvestigator read 3 turns</div><div class="s">subagent</div>
+            <ul class="sub"><li><svg class="i" viewBox="0 0 24 24" style="width: 12px; height: 12px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><span class="mono">get_turn #1441</span></li><li><svg class="i" viewBox="0 0 24 24" style="width: 12px; height: 12px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><span class="mono">get_turn #1445</span></li><li><svg class="i" viewBox="0 0 24 24" style="width: 12px; height: 12px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><span class="mono">get_turn #1426</span></li></ul></div></li>
+          <li><svg class="i" viewBox="0 0 24 24" style="margin-top: 2px" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg><div><div class="t">sqlAnalyst counted unverified batches</div><div class="s">subagent · <span class="mono">query_db</span></div></div></li>
+        </ol>
+        <p>Verification fell to 41%, 9 of 22 edit batches, against a 7-day median of 55%<button type="button" class="cite" aria-label="Source 1">1</button>.</p>
+        <p>Most of the drop is one session. Codex in billing-api patched the rate limiter three times without a test run<button type="button" class="cite" aria-label="Source 2">2</button>.</p>
+        <div class="rcard">
+          <div class="rh"><span class="label">query_db · unverified batches</span><span class="mono muted" style="font-size: 12px">3 rows</span></div>
+          <table><tbody>
+            <tr><td>Codex · billing-api</td><td class="mono muted">feat/rate-limit</td><td class="num mono">4 of 5</td></tr>
+            <tr><td>Claude · web-dashboard</td><td class="mono muted">main</td><td class="num mono">4 of 6</td></tr>
+            <tr><td>Claude · billing-api</td><td class="mono muted">main</td><td class="num mono">2 of 5</td></tr>
+          </tbody></table>
+        </div>
+        <p>The checks that did run were not decorative. In #1426 a failing test led straight to a fix<button type="button" class="cite" aria-label="Source 3">3</button>.</p>
+        <p>For tomorrow: put the test command in the same prompt as the change, for example "… and run pnpm test rate-limit".</p>
+      </div>
+    </div>
+    <div class="composer">
+      <label for="ask" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Ask scorer</label>
+      <textarea id="ask" rows="1" placeholder="Ask about your sessions…"></textarea>
+      <button type="button" class="send" aria-label="Send message"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7M12 19V5"></path></svg></button>
+    </div>
+  </aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["auto","light","dark"],"default":"auto"},"$preview":{"width":448,"height":820}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { rootClass: 'root t-' + (this.props.theme || 'auto') };
+  }
+}
+</script>
+</body>
+</html>
