@@ -1,6 +1,7 @@
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
+import { config } from './config';
 import { getRun } from './lib/run-state';
 import { callTool, type ToolName, type ToolResult } from './lib/scorer-client';
 import { emitThinkingStep } from './lib/thinking-step';
@@ -42,6 +43,7 @@ const SPECS = {
 } as const;
 
 const DUPLICATE = 'identical call already made in this answer — reuse that result';
+export const BUDGET_EXHAUSTED = 'call budget exhausted, summarise now';
 
 /** What the model sees: agent.py's tool_result body (everything except ok/summary/citations). */
 function modelFacing(r: ToolResult): Record<string, unknown> {
@@ -72,6 +74,12 @@ function makeScorerTool(name: ToolName, agent: string) {
             return { ok: false, error: DUPLICATE, earlier_citations: earlier, summary: 'duplicate call skipped',
                      citations: [] } as ToolResult;
           }
+          const budget = config.toolBudgets[agent]?.[name];
+          const used = run.executed.get(`${agent}:${name}`) ?? 0;
+          if (budget !== undefined && used >= budget) {
+            return { ok: false, error: BUDGET_EXHAUSTED, budget, summary: 'call budget exhausted', citations: [] } as ToolResult;
+          }
+          run.executed.set(`${agent}:${name}`, used + 1);
           const res = await callTool(run.scorerUrl, name, args, { n0: run.nextN, day: run.day });
           run.seen.set(key, res.citations.map((c) => c.n));
           run.nextN += res.citations.length;

@@ -1,7 +1,7 @@
 import { MockLanguageModelV3, simulateReadableStream } from 'ai/test';
 
 export type ScriptPart = { text: string } | { tool: string; input: Record<string, unknown> };
-export type ScriptCall = { step: number; prompt: unknown[]; tools: string[]; system: string };
+export type ScriptCall = { step: number; prompt: unknown[]; tools: string[]; system: string; providerOptions?: any; maxOutputTokens?: number };
 
 /** A deterministic V3 model: `script` picks the parts for each call from the prompt it sees.
  *  step = number of tool-result messages already in the prompt (0 on the first call). */
@@ -18,6 +18,8 @@ export function scriptedModel(modelId: string, script: (c: ScriptCall) => Script
         prompt,
         tools: (options.tools ?? []).map((t: any) => t.name),
         system: prompt.filter((m) => m.role === 'system').map((m) => String(m.content)).join('\n'),
+        providerOptions: options.providerOptions,
+        maxOutputTokens: options.maxOutputTokens,
       };
       seen.push(call);
       const parts = script(call);

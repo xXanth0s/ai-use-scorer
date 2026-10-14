@@ -1,5 +1,7 @@
+import { readFile, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { pathToFileURL } from 'node:url';
+import { extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runChat, type ChatBody, type ChatStats } from './chat';
 import { config } from './config';
@@ -22,6 +24,44 @@ function json(res: ServerResponse, code: number, obj: unknown) {
   res.end(body);
 }
 
+/** agent-mastra/public/ (owned by the QA page; this server only serves it). */
+export const PUBLIC_DIR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../public');
+
+const TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.txt': 'text/plain; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+};
+
+/** GET / -> public/index.html, GET /public/<path> -> public/<path>. Anything resolving outside
+ *  public/ (traversal) or missing is a 404. */
+async function serveStatic(res: ServerResponse, publicDir: string, urlPath: string): Promise<void> {
+  let rel: string;
+  try {
+    rel = urlPath === '/' ? 'index.html' : decodeURIComponent(urlPath.slice('/public/'.length));
+  } catch {
+    return json(res, 400, { error: 'bad path' });
+  }
+  const root = resolve(publicDir);
+  const file = resolve(join(root, rel));
+  if (!file.startsWith(root + sep) || rel.includes('\0')) return json(res, 404, { error: 'not found' });
+  try {
+    if (!(await stat(file)).isFile()) throw new Error('not a file');
+    const body = await readFile(file);
+    res.writeHead(200, {
+      'Content-Type': TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
+      'Content-Length': body.length,
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(body);
+  } catch {
+    json(res, 404, { error: 'not found' });
+  }
+}
+
 /** Only loopback scorer URLs are accepted from the proxy header: the sidecar must not be turned
  *  into a fetcher for arbitrary hosts. */
 function scorerUrlFor(req: IncomingMessage): string {
@@ -31,11 +71,17 @@ function scorerUrlFor(req: IncomingMessage): string {
   return config.scorerUrl;
 }
 
-export function makeServer(scorer: ScorerMastra, opts: { onStats?: (s: ChatStats) => void } = {}): Server {
+export function makeServer(
+  scorer: ScorerMastra,
+  opts: { onStats?: (s: ChatStats) => void; publicDir?: string } = {},
+): Server {
   return createServer(async (req, res) => {
-    const path = (req.url ?? '/').split('?')[0];
+    const path = (req.url ?? '/').split('?')[0] ?? '/';
     if (req.method === 'GET' && path === '/health') {
       return json(res, 200, { ok: true, backend: 'mastra', model: config.analystModel });
+    }
+    if ((req.method === 'GET' || req.method === 'HEAD') && (path === '/' || path.startsWith('/public/'))) {
+      return serveStatic(res, opts.publicDir ?? PUBLIC_DIR, path);
     }
     if (req.method !== 'POST' || path !== '/chat') return json(res, 404, { error: 'unknown endpoint' });
     let body: ChatBody;

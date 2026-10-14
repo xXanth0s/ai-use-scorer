@@ -36,6 +36,10 @@ const analystModel = scriptedModel('mock-analyst', (c: ScriptCall): ScriptPart[]
     }
     return [{ text: 'Half the batches were unverified [1]; see [2][3].' }];
   }
+  if (q.includes('BUDGET')) {
+    if (c.step === 0) return [{ tool: 'agent-turnInvestigator', input: { prompt: 'BUDGET: investigate six turns' } }];
+    return [{ text: 'done' }];
+  }
   if (q.includes('LOOP')) {
     if (c.step < 2) return [{ tool: 'get_metric', input: { metric: 'B_min', day: DAY } }];
     if (c.step === 2) return c.tools.includes('get_metric') ? [{ tool: 'get_metric', input: { metric: 'B_min', day: DAY } }]
@@ -46,6 +50,10 @@ const analystModel = scriptedModel('mock-analyst', (c: ScriptCall): ScriptPart[]
 });
 
 const investigatorModel = scriptedModel('mock-haiku', (c) => {
+  if (c.step === 0 && lastUserText(c.prompt).includes('BUDGET')) {
+    const base = ids['0']!;
+    return [0, 1, 2, 3, 4, 5].map((i) => ({ tool: 'get_turn', input: { turn_id: base + i } }));
+  }
   if (c.step === 0) {
     const m = lastUserText(c.prompt).match(/turns (\d+) and (\d+)/);
     return [{ tool: 'get_turn', input: { turn_id: Number(m![1]) } }, { tool: 'get_turn', input: { turn_id: Number(m![2]) } }];
@@ -136,6 +144,26 @@ describe('(b) delegation to a subagent', () => {
     expect(result.summary).toMatch(/\[2\].*\[3\]/);
     // the investigator only had its own tools
     expect(investigatorModel.seen.at(-1)!.tools.sort()).toEqual(['get_metric', 'get_turn']);
+  });
+});
+
+describe('sub-agent harness limits', () => {
+  it('turnInvestigator gets at most 4 get_turn calls; the rest return the budget error', async () => {
+    const evs = await chatDirect('BUDGET: look at many turns');
+    const results = evs.filter((e) => e.type === 'tool-result' && e.name === 'get_turn');
+    expect(results).toHaveLength(6);
+    expect(results.filter((e) => e.ok)).toHaveLength(4);
+    expect(results.filter((e) => !e.ok).map((e) => e.summary)).toEqual(['call budget exhausted', 'call budget exhausted']);
+    // the investigator's model saw the budget error as data
+    expect(toolResultsText(investigatorModel.seen.at(-1)!.prompt)).toContain('call budget exhausted, summarise now');
+    expect(evs.map((e) => e.type)).toContain('subagent-result');
+  });
+
+  it('effort low on analyst + subagents; subagent output cap 8000', () => {
+    expect(analystModel.seen.at(-1)!.providerOptions?.anthropic?.effort).toBe('low');
+    expect(investigatorModel.seen.at(-1)!.providerOptions?.anthropic?.effort).toBe('low');
+    expect(investigatorModel.seen.at(-1)!.maxOutputTokens).toBe(8000);
+    expect(analystModel.seen.at(-1)!.maxOutputTokens).toBe(4000);
   });
 });
 

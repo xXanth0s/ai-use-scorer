@@ -14,6 +14,16 @@ export const config = {
   analystMaxSteps: 8,
   subagentMaxSteps: 5,
   maxOutputTokens: 4000,
+  /** Sub-agent briefs were cut off at 4000 in the first live smoke. */
+  subagentMaxOutputTokens: 8000,
+  /** agent.py EFFORT: sent as Anthropic output_config.effort by @ai-sdk/anthropic. */
+  effort: 'low' as const,
+  /** Hard per-turn call budgets for sub-agent tools; calls past it return an error result.
+   *  (A step cap bounds steps, not fan-out: the investigator once issued 12 get_turns in one step.) */
+  toolBudgets: {
+    turnInvestigator: { get_turn: 4 },
+    sqlAnalyst: { query_db: 3 },
+  } as Record<string, Record<string, number>>,
   historyTokenLimit: Number(process.env.SCORER_HISTORY_TOKEN_LIMIT) || 100_000,
   toolTimeoutMs: 15_000,
 };

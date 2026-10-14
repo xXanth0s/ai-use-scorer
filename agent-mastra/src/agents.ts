@@ -41,7 +41,7 @@ One bullet per turn (≤ 25 words), then one line naming the common pattern, if 
 </style>
 
 <stop_conditions>
-At most ${config.subagentMaxSteps} steps: one get_turn per turn id (max 4 turns — pick the first four if given more), never the same call twice. Then answer.
+At most ${config.subagentMaxSteps} steps and at most ${config.toolBudgets.turnInvestigator?.get_turn} get_turn calls in total (pick the first ones if given more turn ids; further calls are refused), never the same call twice. Then answer.
 </stop_conditions>`;
 
 export const SQL_ANALYST_PROMPT = `<identity>
@@ -66,7 +66,7 @@ The answer in one or two sentences with the numbers, then at most three bullets 
 </style>
 
 <stop_conditions>
-At most ${config.subagentMaxSteps} steps; usually one or two queries. Never repeat an identical query.
+At most ${config.subagentMaxSteps} steps and at most ${config.toolBudgets.sqlAnalyst?.query_db} queries (further calls are refused); usually one or two. Never repeat an identical query.
 </stop_conditions>`;
 
 export type ScorerModels = {
@@ -90,6 +90,13 @@ function processors(agent: string, onGuardTrip?: (t: GuardTrip) => void) {
   return [makeReadLoopGuardProcessor(agent, onGuardTrip), makeHistoryLimiter()];
 }
 
+const effort = { anthropic: { effort: config.effort } };
+const subagentOptions = {
+  maxSteps: config.subagentMaxSteps,
+  modelSettings: { maxOutputTokens: config.subagentMaxOutputTokens },
+  providerOptions: effort,
+};
+
 export function buildAgents(models: ScorerModels, opts: { onGuardTrip?: (t: GuardTrip) => void } = {}) {
   const turnInvestigator = new Agent({
     id: 'turn-investigator',
@@ -100,7 +107,7 @@ export function buildAgents(models: ScorerModels, opts: { onGuardTrip?: (t: Guar
     instructions: { role: 'system', content: TURN_INVESTIGATOR_PROMPT, providerOptions: cached },
     tools: scorerTools('turnInvestigator', ['get_turn', 'get_metric'] as const),
     inputProcessors: processors('turnInvestigator', opts.onGuardTrip),
-    defaultOptions: { maxSteps: config.subagentMaxSteps, modelSettings: { maxOutputTokens: config.maxOutputTokens } },
+    defaultOptions: subagentOptions,
   });
   const sqlAnalyst = new Agent({
     id: 'sql-analyst',
@@ -110,7 +117,7 @@ export function buildAgents(models: ScorerModels, opts: { onGuardTrip?: (t: Guar
     instructions: { role: 'system', content: SQL_ANALYST_PROMPT, providerOptions: cached },
     tools: scorerTools('sqlAnalyst', ['query_db'] as const),
     inputProcessors: processors('sqlAnalyst', opts.onGuardTrip),
-    defaultOptions: { maxSteps: config.subagentMaxSteps, modelSettings: { maxOutputTokens: config.maxOutputTokens } },
+    defaultOptions: subagentOptions,
   });
   const analyst = new Agent({
     id: 'analyst',
@@ -127,7 +134,11 @@ export function buildAgents(models: ScorerModels, opts: { onGuardTrip?: (t: Guar
     tools: scorerTools('analyst', ['query_db', 'get_turn', 'get_metric', 'list_sessions'] as const),
     agents: { turnInvestigator, sqlAnalyst },
     inputProcessors: processors('analyst', opts.onGuardTrip),
-    defaultOptions: { maxSteps: config.analystMaxSteps, modelSettings: { maxOutputTokens: config.maxOutputTokens } },
+    defaultOptions: {
+      maxSteps: config.analystMaxSteps,
+      modelSettings: { maxOutputTokens: config.maxOutputTokens },
+      providerOptions: effort,
+    },
   });
   return { analyst, turnInvestigator, sqlAnalyst };
 }

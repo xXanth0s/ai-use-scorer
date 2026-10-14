@@ -18,6 +18,8 @@ export class RunState {
   /** `${agent}:${tool}:${args}` -> citation numbers of the first result (Python's duplicate rule). */
   readonly seen = new Map<string, number[]>();
   toolCalls = 0;
+  /** `${agent}:${tool}` -> executed calls this turn (for config.toolBudgets). */
+  readonly executed = new Map<string, number>();
   systemPrompt = '';
   private lock: Promise<void> = Promise.resolve();
 
