@@ -75,6 +75,23 @@ INTENT_CASES = [
     ("pip install foo", "other"),
     ("", "other"),
     ("echo 'unbalanced", "other"),
+    # regressions from real data: test words inside heredoc bodies / quotes / paths never decide
+    ("python3 - <<'PY'\np='a.spec.ts'\ns=open(p).read()  # run pytest later\nPY", "run"),
+    ("python3 - <<'PY'\nimport subprocess\nsubprocess.run(['pytest'])", "run"),   # truncated heredoc
+    ("python3 - <<'PY'\nprint('x')\nPY\npytest -q tests/test_x.py", "test"),     # real run after heredoc
+    ("cp apps/api/tests/seal.service.spec.ts /tmp/x.ts", "edit"),
+    ("cp src/a.ts /tmp/a.ts && bun test src/a.spec.ts", "test"),
+    ("cat > e2e/zz-probe.e2e.spec.ts <<'EOF'\ntest('x', () => {})\nEOF", "edit"),
+    ("cat >> tests/test_judge.py <<'EOF'\ndef test_x(): pass\nEOF", "edit"),
+    ("echo 'run pytest now'", "other"),
+    ("grep -rn pytest tests/", "search"),
+    ("cat tests/test_x.py", "read"),
+    ("ls src/main/__tests__", "read"),
+    ("bun e2e:validate-tags", "run"),
+    ("bun test:e2e:reuse -- a.spec.ts", "test"),
+    ("bun run test:unit:affected", "test"),
+    ("bun test:unit --filter=web", "test"),
+    ("pnpm e2e", "test"),
 ]
 
 

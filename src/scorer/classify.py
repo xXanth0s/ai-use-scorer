@@ -218,7 +218,9 @@ _READ_BIN = {"cat", "head", "tail", "awk", "gawk", "wc", "ls", "tree", "jq", "yq
 _RUN_BIN = {"curl", "wget", "bash", "sh", "zsh", "open", "http", "deno"}
 _PKG = {"npm", "pnpm", "yarn", "bun"}
 _PY = re.compile(r"^python(\d+(\.\d+)?)?$")
-_TEST_SCRIPT = re.compile(r"^(test|tests|e2e|spec)([:\-_].*)?$")
+# package scripts / make targets that run tests. `e2e:<x>` only for runner-ish suffixes:
+# `bun e2e:validate-tags` is a linter, not a test run.
+_TEST_SCRIPT = re.compile(r"^(?:(test|tests|spec)([:\-_].*)?|e2e(?:[:\-_](?:run|test|ci|headless|ui|all|local|reuse)\b.*)?)$")
 _BUILD_SCRIPT = re.compile(r"^(build|lint|typecheck|type-check|tsc|check|types|compile)([:\-_].*)?$")
 
 
