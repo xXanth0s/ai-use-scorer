@@ -97,9 +97,9 @@ def write_bundle(conn: sqlite3.Connection, b: Bundle) -> None:
     for a in b.api_calls:
         conn.execute(
             "INSERT OR IGNORE INTO api_call(turn_id, request_id, model, effort, input_tok, cached_tok, output_tok,"
-            " context_window, cost_usd, duration_ms, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " context_window, cost_usd, duration_ms, at, sidechain_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid.get(a.turn_idx), a.request_id, a.model, a.effort, a.input_tok + a.cache_write_tok, a.cached_tok,
-             a.output_tok, a.context_window, a.cost_usd, a.duration_ms, a.at))
+             a.output_tok, a.context_window, a.cost_usd, a.duration_ms, a.at, a.sidechain_id))
     tcid: dict[str, int] = {}
     for c in b.tool_calls:
         cur = conn.execute(

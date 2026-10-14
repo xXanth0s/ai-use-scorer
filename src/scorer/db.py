@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS turn(id INTEGER PRIMARY KEY, session_id TEXT REFERENC
   agent_finished_at TEXT, end_source TEXT, first_uuid TEXT, last_uuid TEXT, UNIQUE(session_id, idx));
 CREATE TABLE IF NOT EXISTS api_call(id INTEGER PRIMARY KEY, turn_id INT REFERENCES turn, request_id TEXT UNIQUE,
   model TEXT, effort TEXT, input_tok INT, cached_tok INT, output_tok INT, context_window INT,
-  cost_usd REAL, duration_ms INT, at TEXT);
+  cost_usd REAL, duration_ms INT, at TEXT, sidechain_id TEXT);
 CREATE TABLE IF NOT EXISTS tool_call(id INTEGER PRIMARY KEY, turn_id INT REFERENCES turn, tool_use_id TEXT UNIQUE,
   name TEXT, kind TEXT, bash_intent TEXT, initiator TEXT, initiator_rule TEXT, args_summary TEXT,
   started_at TEXT, duration_ms INT, is_error INT, has_result INT, sidechain_id TEXT);
@@ -44,7 +44,21 @@ def connect(path: str | Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(DDL)
+    _migrate(conn)
     return conn
+
+
+# Additive columns beyond the spec DDL; ALTER for DBs created before they existed.
+EXTRA_COLUMNS = {"api_call": {"sidechain_id": "TEXT"}}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, cols in EXTRA_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, typ in cols.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+    conn.commit()
 
 
 def latest_run_id(conn: sqlite3.Connection) -> int | None:
