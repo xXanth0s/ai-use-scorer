@@ -98,6 +98,9 @@ def red(v, key: str | None = None, ctx: dict | None = None):
                 out[k] = red_exec_input(x)
             elif k in ("cwd", "path") and isinstance(x, str):
                 out[k] = red_path(x)
+            elif k == "name" and isinstance(x, str) and ty not in ("function_call", "custom_tool_call",
+                                                                       "local_shell_call"):
+                out[k] = h(x)  # parsed_cmd / world_state names may be file or directory names
             else:
                 out[k] = red(x, k, v)
         return out

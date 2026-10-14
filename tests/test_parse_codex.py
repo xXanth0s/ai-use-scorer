@@ -75,7 +75,7 @@ def test_steer_becomes_queued_turn_and_subagent_events():
     assert [(t.prompt_kind, t.initiator) for t in b.turns] == [("prompt", "human"), ("queued", "human")]
     q = b.turns[1]
     assert q.enqueued_at == q.prompt_at and q.end_source == "task_complete"
-    assert b.turns[0].agent_finished_at <= q.prompt_at
+    assert b.turns[0].agent_finished_at == q.prompt_at  # steer: gap 0
     assert len(b.api_calls) == 27
     kinds = Counter(c.kind for c in b.tool_calls)
     assert kinds["subagent"] == 7 and kinds["bash"] == 7 and kinds["web"] == 12
@@ -141,6 +141,27 @@ def test_tooling_prefixes_and_mcp(tmp_path):
                        (1, "skill", "research", "human", "codex:user-prefix")]
     assert b.turns[0].prompt_kind == "command"
     assert b.tool_calls[0].has_result and b.tool_calls[0].duration_ms == 1000
+
+
+def test_path_prompt_is_not_a_command(tmp_path):
+    recs = _base() + [_task(1, "2026-10-10T10:00:00Z", "t1"), _user(2, "2026-10-10T10:00:00Z", "/Users/x/a.py fix"),
+                      _end(3, "2026-10-10T10:00:03Z")]
+    b = parse(_write(tmp_path, recs))
+    assert b.turns[0].prompt_kind == "prompt"
+    assert not [e for e in b.events if e.kind == "tooling"]
+
+
+def test_folded_task_with_activity_then_abort_marks_interrupt(tmp_path):
+    recs = _base() + [
+        _task(1, "2026-10-10T10:00:00Z", "t1"), _user(2, "2026-10-10T10:00:00Z", "hi"), _end(3, "2026-10-10T10:00:03Z"),
+        _task(4, "2026-10-10T10:00:10Z", "t2"),
+        {"timestamp": "2026-10-10T10:00:11Z", "type": "response_item", "ordinal": 5,
+         "payload": {"type": "message", "role": "assistant", "content": []}},
+        _end(6, "2026-10-10T10:00:12Z", "turn_aborted"),
+    ]
+    b = parse(_write(tmp_path, recs))
+    assert len(b.turns) == 1 and b.turns[0].interrupted and b.turns[0].end_source == "interrupt"
+    assert b.turns[0].agent_finished_at == "2026-10-10T10:00:12+00:00"
 
 
 def test_no_prompt_task_folds_into_previous_turn(tmp_path):
