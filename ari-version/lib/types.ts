@@ -15,7 +15,7 @@ export type AnalysisTelemetry = {stage:'preparing'|'agent'|'codex'|'validating'|
 export type Report = { id: string; status: 'queued' | 'running' | 'complete' | 'failed'; createdAt: string; name: string; role: string; sessionIds: string[]; snapshot: Session[]; content: ReportContent | null; error: string | null; coverage: string[]; analysis?:AnalysisTelemetry; scorerMetrics?: ScorerMetrics };
 // Scorer harness bridge (docs/spec/bridge-contract.md). Self-contained so tiles render without evidenceIndex.
 export type ScorerEvidence = { id: string; sessionId: string; excerpt: string };
-export type ScorerTile = { key: string; label: string; value: number | null; unit: 'share' | 'min' | 'count' | 'tokens_k' | 'usd'; display: string; sub?: string; baseline?: number | null; evidence: ScorerEvidence[] };
-export type ScorerMetrics = { day: string; tz: string; source: 'scorer'; demo: boolean; verdict: string; tiles: ScorerTile[]; breakdown: { cCauses: Record<string, number>; costByModel: { model: string; usd: number; tokens: number }[] }; flat: Record<string, number | null>; lanes?: ScorerLane[]; interrupts?: ScorerInterrupt[] };
+export type ScorerTile = { key: string; label: string; howMeasured?: string; value: number | null; unit: 'share' | 'min' | 'count' | 'tokens_k' | 'usd'; display: string; sub?: string; baseline?: number | null; evidence: ScorerEvidence[] };
+export type ScorerMetrics = { day: string; tz: string; source: 'scorer'; demo: boolean; verdict: string; tiles: ScorerTile[]; breakdown: { cCauses: Record<string, number>; costByModel: { model: string; usd: number; tokens: number }[] }; flat: Record<string, number | null>; leverage?: ScorerTile[]; lanes?: ScorerLane[]; interrupts?: ScorerInterrupt[] };
 export type ScorerLane = { sessionId: string; agent: Agent; repo: string | null; branch: string | null; cwd: string | null };
 export type ScorerInterrupt = { sessionId: string; at: string; evidenceId: string | null };

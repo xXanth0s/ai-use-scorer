@@ -360,11 +360,8 @@ def _build_day(conn, day: str, ctx: _Ctx, *, demo: bool) -> tuple[dict, dict]:
     corrections = [(c, lab) for c, lab in labels if lab.get("event") == "correction"]
 
     # tiles ------------------------------------------------------------------------------------
-    def tile(key, label, value, unit, display, sub, ids, baseline=None):
-        ids = [i for i in ids if i][:TILE_EVIDENCE]
-        return {"key": key, "label": label, "value": value, "unit": unit, "display": display,
-                **({"sub": sub} if sub else {}), "baseline": baseline,
-                "evidence": [ctx.excerpt(i) for i in ids]}
+    def tile(*a, **k):
+        return _mk_tile(ctx, *a, **k)
 
     base = {s["metric"]: s.get("baseline") for s in f.get("scored", [])}
     v_unver = ((ver.get("none") or {}).get("turn_ids")) or (f.get("tomorrow") or {}).get("evidence_turns") or []
@@ -393,25 +390,14 @@ def _build_day(conn, day: str, ctx: _Ctx, *, demo: bool) -> tuple[dict, dict]:
     tiles.append(tile("B_min", "Agent blocked on you", val("B_min"), "min",
                       "—" if val("B_min") is None else f"{round(val('B_min'))} min",
                       f"of {act_min / 60:.1f} h active" if act_min else None, [mref("B_min")], base.get("B_min")))
-    tiles.append(tile("context", "Context used (p50)", val("context_p50"), "share",
-                      "—" if val("context_p50") is None else f"{round(val('context_p50'))}%",
-                      None if val("context_p90") is None else f"p90 {round(val('context_p90'))}%",
-                      [mref("context_p50")]))
     models = [{"model": m["model"], "usd": round(m.get("cost_usd") or 0, 2), "tokens": int(m.get("tokens") or 0)}
               for m in diag.get("models", []) if isinstance(m, dict)]
-    tiles.append(tile("cost", "Cost", val("cost_usd"), "usd",
-                      "—" if val("cost_usd") is None else f"${val('cost_usd'):.2f}",
-                      " · ".join(f"{m['model']} ${m['usd']:.2f}" for m in models[:4]) or None,
-                      [mref("cost_usd")]))
-    # context unit is pct in our DB; contract unit 'share' -> store as fraction
-    for t in tiles:
-        if t["key"] == "context" and t["value"] is not None:
-            t["value"] = t["value"] / 100
 
     flat = _flat(rows, asked, causes)
     sm = {"day": day, "tz": _tz(), "source": "scorer", "demo": demo,
           "verdict": (f.get("verdict") or {}).get("text") or "No dominant cost today.",
-          "tiles": tiles, "breakdown": {"cCauses": causes, "costByModel": models}, "flat": flat}
+          "tiles": tiles, "leverage": _leverage(conn, day, ctx, rows),
+          "breakdown": {"cCauses": causes, "costByModel": models}, "flat": flat}
 
     # findings ---------------------------------------------------------------------------------
     fx = []
@@ -482,6 +468,135 @@ def _build_day(conn, day: str, ctx: _Ctx, *, demo: bool) -> tuple[dict, dict]:
 
     content = _content(ctx, f, fx, corrections, episodes, demo, day)
     return content, sm
+
+
+HOW = {
+    "V": "Share of edit batches followed by a test/build/lint run with a recorded result before the turn ended; "
+         "asked-by-you = batches where your prompt asked for the check.",
+    "C": "Turns the judge labelled as corrections of the agent's previous turn (quote must be in your prompt), "
+         "grouped by cause. Uncalibrated.",
+    "episodes": "Did-well episodes the judge proposed from your prompts (good spec, early redirect, scoped turn, "
+                "verification catch, knew when not to delegate). Uncalibrated.",
+    "H": "Lines you changed by hand in files the agent touched, from git snapshots at Stop minus the agent's own edits.",
+    "B_min": "Minutes agents sat finished and waiting while you were active in another session.",
+    "tooling_skill": "Skill invocations from the transcript, split by who triggered them: you (slash/prompt), "
+                     "the agent, or a default hook/config.",
+    "tooling_command": "Slash-command uses from the transcript, split by initiator (you, agent, default).",
+    "tooling_mcp": "MCP tool calls from the transcript, split by initiator (you, agent, default).",
+    "tooling_plugin": "Plugin tool/skill uses from the transcript, split by initiator (you, agent, default).",
+    "top_tools": "Most-used named skills, commands, MCP and plugin tools today, counted from tooling events.",
+    "subagents": "Subagent runs started today (Claude Task/Agent sidechains, Codex child threads), with their models.",
+    "model_mix": "Share of API requests per model across all sessions today.",
+    "parallel": "Share of your active wall time with more than one session working at once (overlap / active).",
+    "interrupts": "Turns you interrupted (Esc / stop), with the agent time thrown away before the interrupt.",
+    "gaps": "Median time between an agent finishing and your next prompt, bucketed; breaks are gaps over 15 min.",
+    "context": "Context window fill per API request: median (p50) and p90 of input tokens / window size.",
+    "tokens": "All recorded tokens: uncached input + cached input + output, deduped per request.",
+    "cost": "List-price cost of every API request, summed per model.",
+}
+
+
+def _fmt_n(x) -> str:
+    if x is None:
+        return "—"
+    x = float(x)
+    for d, suf in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(x) >= d:
+            return f"{x / d:.1f}{suf}"
+    return str(int(round(x)))
+
+
+def _mk_tile(ctx, key, label, value, unit, display, sub, ids, baseline=None) -> dict:
+    ids = [i for i in ids if i][:TILE_EVIDENCE]
+    return {"key": key, "label": label, "value": value, "unit": unit, "display": display,
+            **({"sub": sub} if sub else {}), "baseline": baseline, "howMeasured": HOW.get(key, "")[:240],
+            "evidence": [ctx.excerpt(i) for i in ids]}
+
+
+def _leverage(conn, day: str, ctx: _Ctx, rows: dict, session: str | None = None) -> list[dict]:
+    """Diagnostic tiles (not scored), same sources as serve.py's Leverage tab; session = our session.id
+    restricts to one session (candidate attempts) and drops day-level metrics that mix sessions."""
+    from collections import Counter
+    from . import metrics as mx
+    from . import serve
+    vals = {} if session else {k: r["value"] for k, r in rows.items()}
+    tl = [x for x in mx.tooling(conn, day) if not session or x["session_id"] == session]
+    tiles = []
+    for c in serve.TOOL_CATS:
+        xs = [x for x in tl if x["category"] == c]
+        by = Counter(x["initiator"] for x in xs)
+        tot = vals.get(f"tooling:{c}") if not session else None
+        tot = tot if tot is not None else len(xs)
+        b = {i: int(vals.get(f"tooling:{c}:{i}") or 0) if not session else by.get(i, 0) for i in serve.TOOL_INITS}
+        if not session and not any(b.values()) and xs:
+            b = {i: by.get(i, 0) for i in serve.TOOL_INITS}
+        tiles.append(_mk_tile(ctx, f"tooling_{c}", {"skill": "Skills", "command": "Slash commands", "mcp": "MCP tools",
+                                                    "plugin": "Plugins"}[c], tot, "count", str(int(tot)),
+                              f"by you {b['human']} · by agent {b['agent']} · default {b['default']}",
+                              ctx.user_ids([x["turn_id"] for x in xs])))
+    names = Counter(clip(x["name"], 60) for x in tl if x.get("name"))
+    top = names.most_common(5)
+    tiles.append(_mk_tile(ctx, "top_tools", "Top tools", top[0][1] if top else None, "count",
+                          top[0][0] if top else "—", " · ".join(f"{n} {k}" for n, k in top) or None,
+                          ctx.user_ids([x["turn_id"] for x in tl if top and clip(x["name"] or "", 60) == top[0][0]])))
+    try:
+        runs = [r for r in serve.subagent_runs(conn, day) if not session or r["session_id"] == session]
+    except Exception:  # noqa: BLE001 - diagnostic only
+        runs = []
+    n_sub = len(runs) if (session or vals.get("subagents") is None) else vals["subagents"]
+    models = Counter((r.get("model") or "unknown").replace("claude-", "") for r in runs)
+    tiles.append(_mk_tile(ctx, "subagents", "Subagents", n_sub, "count", str(int(n_sub or 0)),
+                          ("models " + " · ".join(f"{m} {k}" for m, k in models.most_common(4))) if models else None,
+                          ctx.user_ids([r["turn_id"] for r in runs])))
+    if session:
+        api = _rows(conn, "SELECT a.model, a.input_tok, a.cached_tok, a.output_tok, a.cost_usd FROM api_call a"
+                          " JOIN turn t ON t.id=a.turn_id WHERE t.session_id=?", (session,))
+        mix = Counter(a["model"] or "unknown" for a in api)
+    else:
+        mix = Counter({k[len("model_mix:"):]: v or 0 for k, v in vals.items() if k.startswith("model_mix:")})
+    n_req = sum(mix.values())
+    tiles.append(_mk_tile(ctx, "model_mix", "Model mix", n_req or None, "count",
+                          (mix.most_common(1)[0][0].replace("claude-", "") if mix else "—"),
+                          " · ".join(f"{m.replace('claude-', '')} {_pct(k / n_req)}" for m, k in mix.most_common(5))
+                          if n_req else None, []))
+    act, ov = vals.get("active_s"), vals.get("overlap_s")
+    par = (ov / act) if act and ov is not None else None
+    tiles.append(_mk_tile(ctx, "parallel", "Parallel work", par, "share", _pct(par),
+                          f"{ov / 3600:.1f} h of {act / 3600:.1f} h active" if par is not None else None, []))
+    intr = [i for s_ in ctx.sessions for i in s_["_interrupts"] if not session or s_["nativeId"] == session]
+    thrown = vals.get("thrown_s")
+    n_int = vals.get("interrupts") if not session and vals.get("interrupts") is not None else len(intr)
+    tiles.append(_mk_tile(ctx, "interrupts", "Interrupts", n_int, "count", str(int(n_int or 0)),
+                          f"{thrown / 60:.1f} min agent time thrown away" if thrown is not None else None,
+                          [i["evidenceId"] for i in intr]))
+    gm = vals.get("gap_median_s")
+    gb = {b: int(vals.get(f"gap_bucket:{b}") or 0) for b in ("lt30s", "30s-2m", "2-5m", "5-15m", "break")}
+    tiles.append(_mk_tile(ctx, "gaps", "Gap to your next prompt (median)", gm, "count",
+                          "—" if gm is None else (f"{gm:.0f}s" if gm < 120 else f"{gm / 60:.1f} min"),
+                          None if gm is None else f"<30s {gb['lt30s']} · 30s-2m {gb['30s-2m']} · 2-5m {gb['2-5m']}"
+                                                  f" · 5-15m {gb['5-15m']} · break {gb['break']}", []))
+    p50, p90 = vals.get("context_p50"), vals.get("context_p90")
+    tiles.append(_mk_tile(ctx, "context", "Context used (p50)", None if p50 is None else p50 / 100, "share",
+                          "—" if p50 is None else f"{round(p50)}%", None if p90 is None else f"p90 {round(p90)}%", []))
+    if session:
+        ti = sum(int(a["input_tok"] or 0) for a in api)
+        tc = sum(int(a["cached_tok"] or 0) for a in api)
+        to = sum(int(a["output_tok"] or 0) for a in api)
+        cost = sum(a["cost_usd"] or 0 for a in api) if api else None
+        by_model = Counter()
+        for a in api:
+            by_model[(a["model"] or "unknown").replace("claude-", "")] += a["cost_usd"] or 0
+    else:
+        ti, tc, to = vals.get("tokens_in"), vals.get("tokens_cached"), vals.get("tokens_out")
+        cost = vals.get("cost_usd")
+        by_model = Counter({k[len("cost_usd:"):].replace("claude-", ""): v or 0
+                            for k, v in vals.items() if k.startswith("cost_usd:")})
+    total = None if ti is None else (ti or 0) + (tc or 0) + (to or 0)
+    tiles.append(_mk_tile(ctx, "tokens", "Tokens", total, "count", _fmt_n(total),
+                          None if total is None else f"in {_fmt_n(ti)} · out {_fmt_n(to)} · cached {_fmt_n(tc)}", []))
+    tiles.append(_mk_tile(ctx, "cost", "Cost", cost, "usd", "—" if cost is None else f"${cost:.2f}",
+                          " · ".join(f"{m} ${v:.2f}" for m, v in by_model.most_common(4) if v) or None, []))
+    return tiles
 
 
 def _flat(rows: dict, asked, causes: dict) -> dict:
@@ -573,10 +688,8 @@ def _build_attempt(conn, day, ctx: _Ctx, sid: str, att: dict) -> tuple[dict, dic
     vid = ctx.add_metric("V", vrow, [{"turn_id": t, "note": None} for t in turns[:3]]) if vrow else None
     first = ctx.user_ids(turns, 1)
 
-    def tile(key, label, value, unit, display, sub, ids):
-        return {"key": key, "label": label, "value": value, "unit": unit, "display": display,
-                **({"sub": sub} if sub else {}), "baseline": None,
-                "evidence": [ctx.excerpt(i) for i in ids if i][:TILE_EVIDENCE]}
+    def tile(*a, **k):
+        return _mk_tile(ctx, *a, **k)
 
     vv = vrow["value"] if vrow else None
     tiles = [tile("V", "Verified edit batches", vv, "share", _pct(vv), f"outcome {att.get('outcome', '—')}", [vid]),
@@ -587,9 +700,7 @@ def _build_attempt(conn, day, ctx: _Ctx, sid: str, att: dict) -> tuple[dict, dic
                   ctx.user_ids([c["turn_id"] for c, _ in episodes])),
              tile("H", "Hand edits", None, "count", "not measured", None, []),
              tile("B_min", "Agent blocked on you", None, "min", "—",
-                  f"budget {att.get('budget_min', '—')} min", []),
-             tile("context", "Context used (p50)", None, "share", "—", None, []),
-             tile("cost", "Cost", cost, "usd", "—" if cost is None else f"${cost:.2f}", None, first)]
+                  f"budget {att.get('budget_min', '—')} min", [])]
     fx = [_finding(d, "Insufficient evidence", "Low", "Not assessed for single attempts.", []) for d in DIMENSIONS]
     if vv is not None and vid:
         fx[3] = _finding("Verification judgment",
@@ -605,7 +716,8 @@ def _build_attempt(conn, day, ctx: _Ctx, sid: str, att: dict) -> tuple[dict, dic
     content = _content(ctx, f, fx, corrections, episodes, True, day)
     content["title"] = f"{att.get('candidate', 'Candidate')} · {att.get('challenge', 'challenge')}"
     sm = {"day": day, "tz": _tz(), "source": "scorer", "demo": True, "verdict": f["verdict"]["text"],
-          "tiles": tiles, "breakdown": {"cCauses": {}, "costByModel": []},
+          "tiles": tiles, "leverage": _leverage(conn, day, ctx, {}, session=sid),
+          "breakdown": {"cCauses": {}, "costByModel": []},
           "flat": {"V": vv, "C": float(len(corrections)), "cost_usd": cost}}
     return content, sm
 
@@ -642,7 +754,7 @@ def validate(report: dict) -> None:
             raise ValueError("assessment without evidence")
         if item.get("rating") == "Insufficient evidence" and item["confidence"] != "Low":
             raise ValueError("unassessed must be Low")
-    for t in report["scorerMetrics"]["tiles"]:
+    for t in report["scorerMetrics"]["tiles"] + report["scorerMetrics"].get("leverage", []):
         for e in t["evidence"]:
             if e["id"] not in ids:
                 raise ValueError(f"tile {t['key']}: unknown evidence {e['id']}")

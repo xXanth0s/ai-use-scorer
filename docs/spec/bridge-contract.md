@@ -43,7 +43,7 @@ Local re-run replaces the same ids. Hosted: complete reports are immutable, so i
 export type EvidenceKind = 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'metric';
 export type ScorerEvidence = { id: string; sessionId: string; excerpt: string };   // excerpt ≤ 320 chars
 export type ScorerTile = {
-  key: 'V' | 'C' | 'episodes' | 'H' | 'B_min' | 'context' | 'cost';
+  key: string;              // tiles: V | C | episodes | H | B_min; leverage: see `leverage` below
   label: string;            // plain words, e.g. "Verified edit batches"
   value: number | null;     // null = not measured (context as a fraction 0..1)
   unit: 'share' | 'min' | 'count' | 'tokens_k' | 'usd';
@@ -51,14 +51,20 @@ export type ScorerTile = {
   sub?: string;             // V: "asked by you 10% · 52 unverified"; C: "by cause: instruction violated 4 · …";
                             // episodes: episode titles; H: "repair 2 · own 1"; context: "p90 28%"; cost: per model
   baseline?: number | null; // 7-day baseline when available
-  evidence: ScorerEvidence[]; // self-contained turn links (≤ 8), work without evidenceIndex
+  howMeasured?: string;     // one plain sentence (≤ 240 chars), set on every tile and leverage tile
+  evidence: ScorerEvidence[]; // self-contained turn links (≤ 8); [] when the number has no turn refs
 };
 export type ScorerLane = { sessionId: string; agent: 'claude' | 'codex'; repo: string | null; branch: string | null; cwd: string };
 export type ScorerInterrupt = { sessionId: string; at: string; evidenceId: string }; // evidenceId = user Evidence of the interrupted turn
 export type ScorerMetrics = {
   day: string; tz: string; source: 'scorer'; demo: boolean;
   verdict: string;                        // our deterministic verdict line (report.facts().verdict.text)
-  tiles: ScorerTile[];                    // order: V, C, episodes, H, B_min, context, cost
+  tiles: ScorerTile[];                    // scores, order: V, C, episodes, H, B_min
+  leverage: ScorerTile[];                 // diagnostics (not scored), order: tooling_skill, tooling_command, tooling_mcp,
+                                          // tooling_plugin (sub 'by you N · by agent N · default N'), top_tools (top 5 named),
+                                          // subagents (sub models; depth not stored → omitted), model_mix (share of requests),
+                                          // parallel (overlap_s/active_s), interrupts (sub thrown min), gaps (median; buckets),
+                                          // context (p50; sub p90), tokens (total; in/out/cached), cost (per model)
   breakdown: {
     cCauses: Record<string, number>;      // corrections by cause (C:cause:*)
     costByModel: { model: string; usd: number; tokens: number }[];

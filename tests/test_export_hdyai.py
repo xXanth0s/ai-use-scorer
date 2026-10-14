@@ -26,7 +26,12 @@ def test_build_shapes_and_ids(bundle):
         assert s["tokenUsage"]["finalOutputCountKnown"] is False and s["tokenUsage"]["finalOutputs"] == []
         assert all(not k.startswith("_") for k in s)
     sm = rep["scorerMetrics"]
-    assert [t["key"] for t in sm["tiles"]] == ["V", "C", "episodes", "H", "B_min", "context", "cost"]
+    assert [t["key"] for t in sm["tiles"]] == ["V", "C", "episodes", "H", "B_min"]
+    assert [t["key"] for t in sm["leverage"]] == ["tooling_skill", "tooling_command", "tooling_mcp", "tooling_plugin",
+                                                  "top_tools", "subagents", "model_mix", "parallel", "interrupts",
+                                                  "gaps", "context", "tokens", "cost"]
+    assert all(t["howMeasured"] and len(t["howMeasured"]) <= 240 for t in sm["tiles"] + sm["leverage"])
+    assert all(e["id"] in ids for t in sm["leverage"] for e in t["evidence"])
     assert all(e["id"] in ids for t in sm["tiles"] for e in t["evidence"])
     assert {l["sessionId"] for l in sm["lanes"]} == {s["id"] for s in rep["snapshot"]}
     assert all(i["evidenceId"] in ids for i in sm["interrupts"]) and sm["interrupts"]

@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Report, ScorerMetrics, Session } from '../lib/types';
 import { evidenceIndex, findEvidence } from '../lib/report-view';
-import { layoutDayTimeline, overlapIntervals } from '../lib/day-timeline';
 
 // Session ids from the scorer export are hashes, not uuids; metric evidence ids carry no session prefix.
 const sid='3f2a9c0d1e7b44aa9c01de55';
@@ -38,13 +37,4 @@ test('report and evidence routes serve scorerMetrics and metric evidence',async(
   const e=await ev.GET(new Request(`http://localhost/api/evidence?id=metric:4711&report=${report.id}`,{headers:{host:'localhost'}}));
   assert.equal((await e.json()).event.text,'V = 0.67 share (n=6)');
  }finally{await rm(root,{recursive:true,force:true});}
-});
-
-test('day timeline groups lanes by worktree, shades overlap, places linked interrupts',()=>{
- assert.deepEqual(overlapIntervals([{sessionId:'a',start:0,end:10},{sessionId:'b',start:5,end:20},{sessionId:'a',start:30,end:40}]),[{start:5,end:10}]);
- const L=layoutDayTimeline([{id:sid,agent:'claude',title:'bridge',tasks:session.tasks}],scorerMetrics.lanes,scorerMetrics.interrupts,900)!;
- assert.equal(L.rows[0].type,'repo');
- const lane=L.rows[1];assert.ok(lane.type==='lane');
- if(lane.type==='lane'){assert.equal(lane.label,'main');assert.equal(lane.bars.length,1);assert.equal(lane.ticks[0].evidenceId,`${sid}:3000`);}
- assert.equal(layoutDayTimeline([],[],[],900),null);
 });
