@@ -32,3 +32,7 @@ Known: verdict weights are guesses (unverified batch = 5 min, hand repair = 3 mi
 
 ## In progress
 Dashboard (Sherpa theme, tabs Today/Sessions/Trends/Leverage/Candidate, Ask-AI sidebar) · Mastra sidecar (agent-mastra/, subagents turnInvestigator/sqlAnalyst; optional, Python agent stays default) · `install --project` + `ingest --cwd-prefix` for the herdr test lab.
+
+## Live collection (installed 2026-10-14, user-approved diff)
+Claude hooks in ~/.claude/settings.json (one scorer group per event, backup settings.json.bak), daily launchd job com.scorer.daily at 18:00 (ingest --since 2d + report → ~/.scorer/reports/<date>.md), default ~/.scorer/config.toml. Codex hooks NOT installed (needs user trust approval). Revert: `uv run scorer uninstall --agent claude --yes`.
+Mastra sidecar analyst model: claude-sonnet-5-5 (Opus fallback); Python analyst stays on config analyst_model (Opus).
