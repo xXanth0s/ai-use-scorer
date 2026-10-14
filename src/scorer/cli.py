@@ -30,12 +30,15 @@ def cli() -> None:
 @click.option("--yes", is_flag=True, help="Apply without asking.")
 @click.option("--dry-run", is_flag=True, help="Print the diff only.")
 @click.option("--no-schedule", is_flag=True, help="Skip the daily ingest+report job.")
-def install(agents, claude_settings, codex_home, yes, dry_run, no_schedule):
+@click.option("--project", default=None, type=click.Path(file_okay=False),
+              help="Lab mode: hooks only in <dir>/.claude/settings.local.json (+ .codex/hooks.json), "
+                   "pinned to the current SCORER_HOME; no schedule, no global files.")
+def install(agents, claude_settings, codex_home, yes, dry_run, no_schedule, project):
     """Merge scorer hooks into Claude/Codex hook configs (shows diff first)."""
     from .install import run_install
     sys.exit(run_install(agents=agents, claude_settings=claude_settings, codex_home=codex_home,
                          yes=yes, dry_run=dry_run, uninstall=False,
-                         schedule=False if no_schedule else None))
+                         schedule=False if no_schedule else None, project=project))
 
 
 @cli.command()
@@ -45,12 +48,15 @@ def install(agents, claude_settings, codex_home, yes, dry_run, no_schedule):
 @click.option("--yes", is_flag=True)
 @click.option("--dry-run", is_flag=True)
 @click.option("--no-schedule", is_flag=True, help="Skip the daily ingest+report job.")
-def uninstall(agents, claude_settings, codex_home, yes, dry_run, no_schedule):
+@click.option("--project", default=None, type=click.Path(file_okay=False),
+              help="Lab mode: hooks only in <dir>/.claude/settings.local.json (+ .codex/hooks.json), "
+                   "pinned to the current SCORER_HOME; no schedule, no global files.")
+def uninstall(agents, claude_settings, codex_home, yes, dry_run, no_schedule, project):
     """Remove scorer hooks, leaving all other hooks untouched."""
     from .install import run_install
     sys.exit(run_install(agents=agents, claude_settings=claude_settings, codex_home=codex_home,
                          yes=yes, dry_run=dry_run, uninstall=True,
-                         schedule=False if no_schedule else None))
+                         schedule=False if no_schedule else None, project=project))
 
 
 def _days(s: str) -> int:
@@ -64,14 +70,17 @@ def _days(s: str) -> int:
 @click.option("--events", "events_file", default=None)
 @click.option("--db", default=None)
 @click.option("--no-metrics", is_flag=True)
-def ingest(since, claude_root, codex_root, events_file, db, no_metrics):
+@click.option("--cwd-prefix", "cwd_prefixes", multiple=True,
+              help="Keep only sessions whose cwd is under this dir (repeatable; default: env SCORER_CWD_PREFIX).")
+def ingest(since, claude_root, codex_root, events_file, db, no_metrics, cwd_prefixes):
     """Parse transcripts + hook events into SQLite, then compute metrics."""
     from .db import connect
     from .ingest import run_ingest
     from .model import events_path
     conn = connect(db)
     run_id = run_ingest(conn, since_days=_days(since), claude_root=claude_root, codex_root=codex_root,
-                        events_file=events_file or str(events_path()))
+                        events_file=events_file or str(events_path()),
+                        cwd_prefixes=list(cwd_prefixes) or None)
     if not no_metrics:
         from .metrics import compute_all
         compute_all(conn, run_id)

@@ -24,9 +24,11 @@ TIMEOUT = 5
 CODEX_TIMEOUTS = {"SessionEnd": 3}  # codex clamps SessionEnd to 3 s and warns otherwise
 
 
-def hook_command(agent: str, event: str) -> str:
+def hook_command(agent: str, event: str, home: str | None = None) -> str:
+    """`home` pins SCORER_HOME (project/lab installs) regardless of the agent's env."""
     # `2>/dev/null || true`: a broken venv must never print or exit non-zero.
-    return (f'"{os.path.abspath(sys.executable)}" -m scorer event --agent {agent} --event {event}'
+    prefix = f'SCORER_HOME="{home}" ' if home else ""
+    return (prefix + f'"{os.path.abspath(sys.executable)}" -m scorer event --agent {agent} --event {event}'
             " 2>/dev/null || true")
 
 
@@ -39,21 +41,21 @@ def _is_scorer_group(group) -> bool:
     return False
 
 
-def _group(agent: str, event: str) -> dict:
+def _group(agent: str, event: str, home: str | None = None) -> dict:
     timeout = CODEX_TIMEOUTS.get(event, TIMEOUT) if agent == "codex" else TIMEOUT
     g: dict = {}
     if event == "PostToolUse":
         g["matcher"] = "*"
-    g["hooks"] = [{"type": "command", "command": hook_command(agent, event), "timeout": timeout}]
+    g["hooks"] = [{"type": "command", "command": hook_command(agent, event, home), "timeout": timeout}]
     return g
 
 
-def merge(data: dict, agent: str) -> dict:
+def merge(data: dict, agent: str, home: str | None = None) -> dict:
     new = copy.deepcopy(data)
     hooks = new.setdefault("hooks", {})
     for ev in EVENTS:
         groups = hooks.setdefault(ev, [])
-        want = _group(agent, ev)
+        want = _group(agent, ev, home)
         idx = [i for i, g in enumerate(groups) if _is_scorer_group(g)]
         if idx:
             groups[idx[0]] = want  # replace in place (e.g. new interpreter path)
@@ -152,18 +154,19 @@ def _codex_notes(codex_home: Path) -> list[str]:
 
 
 def _one(label: str, path: Path, agent: str | None, *, yes: bool, dry_run: bool,
-         uninstall: bool) -> int:
+         uninstall: bool, home: str | None = None, delete_if_empty: bool = False) -> int:
     try:
         data, old_text = _load(path)
     except (ValueError, OSError) as e:
         print(f"{label}: cannot parse {path}: {e}; not touching it", file=sys.stderr)
         return 1
-    new = unmerge(data) if uninstall else merge(data, agent)
+    new = unmerge(data) if uninstall else merge(data, agent, home)
     if new == data:
         print(f"{label}: {path} already up to date")
         return 0
     old_canon = old_text if old_text else ""
-    new_text = dumps(new) if new or path.exists() else ""
+    remove = uninstall and delete_if_empty and not new
+    new_text = "" if remove else (dumps(new) if new or path.exists() else "")
     diff = "\n".join(difflib.unified_diff(
         old_canon.splitlines(), new_text.splitlines(), lineterm="",
         fromfile=f"{path} (current)", tofile=f"{path} (scorer {'uninstall' if uninstall else 'install'})"))
@@ -174,6 +177,14 @@ def _one(label: str, path: Path, agent: str | None, *, yes: bool, dry_run: bool,
     if not yes and not _confirm(f"Apply to {path}? [y/N] "):
         print(f"{label}: skipped")
         return 1
+    if remove:
+        path.unlink()
+        try:
+            path.parent.rmdir()  # only if now empty
+        except OSError:
+            pass
+        print(f"{label}: removed {path} (only scorer hooks were left)")
+        return 0
     _atomic_write(path, new_text)
     print(f"{label}: wrote {path} (backup: {path.name}.bak)" if old_text
           else f"{label}: wrote {path}")
@@ -349,9 +360,46 @@ def ensure_default_config(*, dry_run: bool) -> None:
     print(f"config: wrote default {p}")
 
 
+CODEX_PROJECT_NOTE = ("codex: project hooks go to <project>/.codex/hooks.json (codex 0.160 loads "
+                      "project-local hooks for trusted projects; not verified at runtime). They only run "
+                      "once the project and the hooks are trusted; otherwise codex is measured from "
+                      "rollouts only (filter by --cwd-prefix).")
+
+
+def run_project_install(project: str, *, agents, codex_home, yes, dry_run, uninstall) -> int:
+    """Lab mode: hooks only in <project>/.claude/settings.local.json (+ <project>/.codex/hooks.json),
+    commands pinned to the current SCORER_HOME. No schedule, no global files."""
+    from .model import scorer_home
+    root = Path(os.path.expanduser(project)).resolve()
+    if not root.is_dir():
+        print(f"project: {root} is not a directory", file=sys.stderr)
+        return 1
+    home = str(scorer_home().expanduser().resolve())
+    rc = 0
+    for agent in agents:
+        if agent == "claude":
+            rc |= _one("claude", root / ".claude" / "settings.local.json", "claude",
+                       yes=yes, dry_run=dry_run, uninstall=uninstall, home=home,
+                       delete_if_empty=True)
+        elif agent == "codex":
+            rc |= _one("codex", root / ".codex" / "hooks.json", "codex",
+                       yes=yes, dry_run=dry_run, uninstall=uninstall, home=home,
+                       delete_if_empty=True)
+            if not uninstall:
+                print(CODEX_PROJECT_NOTE)
+                for n in _codex_notes(Path(os.path.expanduser(codex_home))):
+                    print(n)
+    if not uninstall:
+        print(f"project: events from {root} go to SCORER_HOME={home}")
+    return rc
+
+
 def run_install(*, agents, claude_settings, codex_home, yes, dry_run, uninstall,
-                schedule: bool | None = None) -> int:
-    """`schedule=None` -> on unless env SCORER_NO_SCHEDULE=1 (cli has no --no-schedule yet)."""
+                schedule: bool | None = None, project: str | None = None) -> int:
+    """`schedule=None` -> on unless env SCORER_NO_SCHEDULE=1. `project` -> lab mode (see above)."""
+    if project:
+        return run_project_install(project, agents=agents, codex_home=codex_home, yes=yes,
+                                   dry_run=dry_run, uninstall=uninstall)
     if schedule is None:
         schedule = os.environ.get("SCORER_NO_SCHEDULE") not in ("1", "true", "yes")
     rc = 0

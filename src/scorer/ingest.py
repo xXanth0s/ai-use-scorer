@@ -121,14 +121,39 @@ def write_bundle(conn: sqlite3.Connection, b: Bundle) -> None:
                       json.dumps(e.data, default=str)))
 
 
+def cwd_prefixes_from_env() -> list[str]:
+    """SCORER_CWD_PREFIX = os.pathsep-separated dirs (default for --cwd-prefix)."""
+    return [p for p in os.environ.get("SCORER_CWD_PREFIX", "").split(os.pathsep) if p.strip()]
+
+
+def _real(p: str) -> str:
+    return os.path.realpath(os.path.expanduser(p))
+
+
+def cwd_matches(cwd: str | None, prefixes: list[str]) -> bool:
+    """True if cwd is one of the prefixes or below it (symlinks resolved: /tmp == /private/tmp)."""
+    if not prefixes:
+        return True
+    if not cwd:
+        return False
+    c = _real(cwd)
+    for p in prefixes:
+        r = _real(p)
+        if c == r or c.startswith(r.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
 def run_ingest(conn: sqlite3.Connection, *, since_days: int, claude_root: str, codex_root: str,
-               events_file: str | None) -> int:
+               events_file: str | None, cwd_prefixes: list[str] | None = None) -> int:
+    """cwd_prefixes=None -> env SCORER_CWD_PREFIX; empty -> no filter."""
+    prefixes = list(cwd_prefixes) if cwd_prefixes else cwd_prefixes_from_env()
     hooks = load_hook_events(events_file)
     run_id = conn.execute("INSERT INTO ingest_run(at, parser_version) VALUES (?,?)",
                           (datetime.now(timezone.utc).isoformat(), PARSER_VERSION)).lastrowid
     jobs: list[tuple[str, str]] = [("claude", p) for p in discover_claude(claude_root, since_days)]
     jobs += [("codex", p) for p in discover_codex(codex_root, since_days)]
-    ok = fail = 0
+    ok = fail = skipped = 0
     for agent, path in jobs:
         try:
             if agent == "claude":
@@ -141,6 +166,9 @@ def run_ingest(conn: sqlite3.Connection, *, since_days: int, claude_root: str, c
             b = parse(path, hooks.get(_session_id_from_path(path)))
             if b is None:
                 continue
+            if prefixes and not cwd_matches(b.session.cwd, prefixes):
+                skipped += 1
+                continue
             with conn:
                 write_bundle(conn, b)
             ok += 1
@@ -148,6 +176,9 @@ def run_ingest(conn: sqlite3.Connection, *, since_days: int, claude_root: str, c
             fail += 1
             log(f"ingest: skip {os.path.basename(path)}: {type(e).__name__}: {str(e)[:80]}")
     conn.commit()
+    if prefixes:
+        log(f"ingest: cwd filter kept {ok}, skipped {skipped} session(s) outside "
+            f"{len(prefixes)} prefix(es)")
     if fail:
         log(f"ingest: {ok} ok, {fail} failed")
     return run_id

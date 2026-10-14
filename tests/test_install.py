@@ -303,3 +303,105 @@ def test_default_config_written_once(fake_schedulers, scorer_home, tmp_path):
     cfg.write_text('report_time = "09:00"\n')
     inst(tmp_path / "s.json", tmp_path)
     assert cfg.read_text() == 'report_time = "09:00"\n'
+
+
+# --- lab mode: project-scoped hooks + ingest cwd filter -----------------------
+
+def test_project_install_only_touches_project(tmp_path, claude_file, codex_home, scorer_home,
+                                              fake_schedulers, capsys):
+    import hashlib
+    proj = tmp_path / "lab" / "proj"
+    proj.mkdir(parents=True)
+    glob_sha = hashlib.sha256(claude_file.read_bytes()).hexdigest()
+    codex_sha = hashlib.sha256((codex_home / "hooks.json").read_bytes()).hexdigest()
+    kw = dict(agents=("claude", "codex"), claude_settings=str(claude_file), codex_home=str(codex_home),
+              uninstall=False, project=str(proj))
+
+    assert run_install(yes=False, dry_run=True, **kw) == 0
+    assert not (proj / ".claude").exists() and not (proj / ".codex").exists()
+
+    assert run_install(yes=True, dry_run=False, **kw) == 0
+    local = proj / ".claude" / "settings.local.json"
+    data = json.loads(local.read_text())
+    sg = scorer_groups(data)
+    home = str(scorer_home.resolve())
+    for ev in install.EVENTS:
+        cmd = sg[ev][0]["hooks"][0]["command"]
+        assert cmd.startswith(f'SCORER_HOME="{home}" "') and f"--agent claude --event {ev}" in cmd
+    assert scorer_groups(json.loads((proj / ".codex" / "hooks.json").read_text()))["Stop"]
+    out = capsys.readouterr().out
+    assert "rollouts only (filter by --cwd-prefix)" in out
+
+    once = local.read_bytes()
+    assert run_install(yes=True, dry_run=False, **kw) == 0
+    assert local.read_bytes() == once  # idempotent
+
+    # nothing global touched: no schedule, no config.toml, global files unchanged
+    assert hashlib.sha256(claude_file.read_bytes()).hexdigest() == glob_sha
+    assert hashlib.sha256((codex_home / "hooks.json").read_bytes()).hexdigest() == codex_sha
+    assert calls(fake_schedulers) == [] and not fake_schedulers["agents_dir"].exists()
+    assert not (scorer_home / "config.toml").exists()
+
+    assert run_install(yes=True, dry_run=False, **dict(kw, uninstall=True)) == 0
+    assert not (proj / ".claude").exists() and not (proj / ".codex").exists()
+    assert sorted(p.name for p in proj.iterdir()) == []
+
+
+def test_project_install_merges_existing_local_settings(tmp_path):
+    proj = tmp_path / "p"
+    (proj / ".claude").mkdir(parents=True)
+    local = proj / ".claude" / "settings.local.json"
+    local.write_text(install.dumps({"permissions": {"allow": ["Bash(ls)"]}}))
+    orig = local.read_bytes()
+    kw = dict(agents=("claude",), claude_settings="unused", codex_home="unused", yes=True, dry_run=False,
+              project=str(proj))
+    assert run_install(uninstall=False, **kw) == 0
+    assert json.loads(local.read_text())["permissions"] == {"allow": ["Bash(ls)"]}
+    assert run_install(uninstall=True, **kw) == 0
+    assert local.read_bytes() == orig
+
+
+def test_project_must_exist(tmp_path):
+    assert run_install(agents=("claude",), claude_settings="x", codex_home="x", yes=True, dry_run=False,
+                       uninstall=False, project=str(tmp_path / "nope")) == 1
+
+
+def _fake_ingest(monkeypatch, tmp_path, cwds: dict[str, str]):
+    from scorer import ingest, parse_claude
+    from scorer.model import Bundle, Session
+    monkeypatch.setattr(ingest, "discover_claude", lambda root, days: sorted(cwds))
+    monkeypatch.setattr(ingest, "discover_codex", lambda root, days: [])
+    monkeypatch.setattr(parse_claude, "parse",
+                        lambda path, hooks=None: Bundle(Session(id=path, agent="claude", cwd=cwds[path])))
+    return ingest
+
+
+def _sessions(conn) -> list[str]:
+    return sorted(r[0] for r in conn.execute("SELECT id FROM session"))
+
+
+def test_ingest_cwd_prefix_filter(tmp_path, monkeypatch):
+    from scorer.db import connect
+    lab = tmp_path / "lab"
+    (lab / "proj").mkdir(parents=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    link = tmp_path / "lablink"
+    link.symlink_to(lab)  # like /tmp -> /private/tmp
+    ingest = _fake_ingest(monkeypatch, tmp_path, {
+        "a": str(link / "proj"), "b": str(other), "c": str(tmp_path / "lab2"), "d": None})
+    monkeypatch.delenv("SCORER_CWD_PREFIX", raising=False)
+
+    conn = connect(tmp_path / "f.db")
+    ingest.run_ingest(conn, since_days=30, claude_root="x", codex_root="x", events_file=None,
+                      cwd_prefixes=[str(lab)])
+    assert _sessions(conn) == ["a"]  # symlink resolved; lab2 is not under lab; None excluded
+
+    conn = connect(tmp_path / "all.db")
+    ingest.run_ingest(conn, since_days=30, claude_root="x", codex_root="x", events_file=None)
+    assert _sessions(conn) == ["a", "b", "c", "d"]
+
+    monkeypatch.setenv("SCORER_CWD_PREFIX", os.pathsep.join([str(other), str(link)]))
+    conn = connect(tmp_path / "env.db")
+    ingest.run_ingest(conn, since_days=30, claude_root="x", codex_root="x", events_file=None)
+    assert _sessions(conn) == ["a", "b"]
