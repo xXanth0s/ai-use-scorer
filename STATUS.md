@@ -36,3 +36,8 @@ Dashboard (Sherpa theme, tabs Today/Sessions/Trends/Leverage/Candidate, Ask-AI s
 ## Live collection (installed 2026-10-14, user-approved diff)
 Claude hooks in ~/.claude/settings.json (one scorer group per event, backup settings.json.bak), daily launchd job com.scorer.daily at 18:00 (ingest --since 2d + report → ~/.scorer/reports/<date>.md), default ~/.scorer/config.toml. Codex hooks NOT installed (needs user trust approval). Revert: `uv run scorer uninstall --agent claude --yes`.
 Mastra sidecar analyst model: claude-sonnet-5-5 (Opus fallback); Python analyst stays on config analyst_model (Opus).
+
+## Dashboard (done; review round 1 applied)
+`uv run scorer serve --port 8811` → tabs Today · Sessions · Trends · Leverage (Candidate hidden until calibrated). Sherpa colors (warm background, white cards), worktree timeline with analyst hover summaries, analyst narrative (cached), Ask-AI sidebar (steps, subagents, citations, peek, quick-reply tiles), chat becomes a drawer < 1440 px. Verdict = `report.facts()` (single source with `scorer report`). Judge labels carry an "uncalibrated" chip. Lab/scratch/temp sessions excluded at ingest by default (`--include-lab` to opt in).
+Pending: judge action items (bottom of Today + report), Mastra QA fixes + Sonnet analyst + tiles in the test page.
+Demo: `uv run scorer ingest && uv run scorer judge --day today && uv run scorer serve --port 8811` → open http://127.0.0.1:8811/.
