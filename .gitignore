@@ -5,3 +5,4 @@ __pycache__/
 .gstack/
 .context/
 *.db
+report_fallback.txt

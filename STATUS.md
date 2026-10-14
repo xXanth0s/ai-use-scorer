@@ -19,3 +19,16 @@ Demo: `uv run scorer ingest --since 30d && uv run scorer check`.
 ## M3 — metrics + report (metrics done; report in progress)
 Works: V/B + diagnostics + tooling on real data (30 d: active 33.5 h, overlap 3.2 h, V 22% of 254 batches, final verified 2%, B 184 min, 33 interrupts / 2.7 h thrown, $790 all priced). Note: V "fail share" 91% is ~all "verified then edited again" (only 5/235 test/build runs failed).
 Pending: report.py, report_fallback.txt, judge (bounded to 40 uncached turns at report time; `--no-judge` fallback).
+
+## M2 — done (hook→ingest seam verified)
+`scripts/demo_e2e.sh` with "add a failing test to hello.py": turn ends via Stop hook (matched by prompt_id), git_snapshot attached with changed_paths, H measured (unit `edits`), check ok.
+
+## M3 — metrics + report (done)
+`scorer report --day today | --days 7`: 8 lines from metric rows, 7-day baseline, $ per model next to tokens, analyst narrative when a key is present (`SCORER_NO_LLM=1` to skip). Fallback: `scripts/report_fallback.sh` → `report_fallback.txt` (gitignored; contains clipped real text).
+Known: verdict weights are guesses (unverified batch = 5 min, hand repair = 3 min).
+
+## M6 — judge (done)
+`scorer judge --day today|YYYY-MM-DD|all`; `scorer report` judges ≤40 uncached turns first (≤45 s), `--no-judge` to skip. claude-haiku-5-5, strict tool schema, evidence must be an exact prompt substring else abstain, cached in `judge_label`; fallbacks `claude -p` (runs in SCORER_HOME/judge, excluded from ingest) → regex (flagged). Haiku 5.5 rejects temperature≠default → determinism via schema + cache. Calibration (κ on 50 double-labelled turns) not done.
+
+## In progress
+Dashboard (Sherpa theme, tabs Today/Sessions/Trends/Leverage/Candidate, Ask-AI sidebar) · Mastra sidecar (agent-mastra/, subagents turnInvestigator/sqlAnalyst; optional, Python agent stays default) · `install --project` + `ingest --cwd-prefix` for the herdr test lab.
