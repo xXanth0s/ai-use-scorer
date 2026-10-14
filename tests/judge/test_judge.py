@@ -238,13 +238,17 @@ def test_run_judge_cache_and_metrics(tmp_path):
 
     client = OrderedClient([])
     st = judge.run_judge(conn, 1, client=client, chain=["api"])
-    assert len(client.calls) == 2 and st["called"] == 2 and st["cached"] == 0
+    # 3 calls: the session's first prompt is labelled too (positive episodes), but stays out of C
+    assert len(client.calls) == 3 and st["called"] == 3 and st["cached"] == 0
+    assert st["n"] == 2 and st["first_turns"] == 1 and st["first_labelled"] == 1
     assert st["dist"] == {"correction": 1, "new_requirement": 1}
-    assert conn.execute("SELECT count(*) FROM judge_label").fetchone()[0] == 2
+    assert conn.execute("SELECT count(*) FROM judge_label").fetchone()[0] == 3
+    assert "FIRST prompt" in client.calls[0]["messages"][0]["content"] or any(
+        "FIRST prompt" in c["messages"][0]["content"] for c in client.calls)
 
     st2 = judge.run_judge(conn, 1, client=client, chain=["api"])
-    assert len(client.calls) == 2, "cache hit must not call the API again"
-    assert st2["cached"] == 2
+    assert len(client.calls) == 3, "cache hit must not call the API again"
+    assert st2["cached"] == 3
 
     rows = dict(conn.execute("SELECT metric, value FROM metric_value WHERE run_id=1 AND scope_type='day'"
                              " AND (metric LIKE 'C:%' OR metric LIKE 'C^_%' ESCAPE '^')").fetchall())
@@ -280,7 +284,7 @@ def test_regex_cache_does_not_block_api(tmp_path):
     client = FakeClient([{"event": "correction", "cause": "unknown", "detection": "human_review",
                           "evidence": "that's wrong", "confidence": 0.7, "defect_caught": True, "resolved": None}])
     st = judge.run_judge(conn, 1, client=client, chain=["api"])
-    assert len(client.calls) == 1 and st["sources"] == {"api": 1}
+    assert len(client.calls) == 2 and st["sources"] == {"api": 1}   # + the first prompt
 
 
 def test_hash_depends_on_model_prompt_summary_version():
@@ -358,7 +362,7 @@ def test_timeout_leaves_turns_unlabelled_and_returns_fast(tmp_path):
     st = judge.run_judge(conn, 1, client=Slow([]), chain=["api"], timeout=0.2, workers=8)
     assert time.monotonic() - t0 < 2
     release.set()
-    assert st["labelled"] == 0 and st["timed_out"] == 2
+    assert st["labelled"] == 0 and st["timed_out"] == 3   # incl. the first prompt
     assert conn.execute("SELECT count(*) FROM judge_label").fetchone()[0] == 0
     assert tuple(conn.execute("SELECT value, n FROM metric_value WHERE metric='C_labelled'").fetchone()) == (0, 2)
 

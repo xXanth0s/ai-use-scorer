@@ -26,8 +26,10 @@ Deterministic rules (documented here, tested in tests/test_report.py)
     Cargo.toml). Plus hand-edit evidence (H).
   5 Worst attention window: blocked gaps (metrics.blocked, joined to metrics.gaps for times) are
     clustered when less than WINDOW_JOIN_S apart; the cluster with the most blocked seconds wins.
-  6 Pattern to repeat: the session with the best verified share (>= 1 verified batch; ties: more
-    batches); else the most-used human-initiated tooling; else none.
+  6 Pattern to repeat: the strongest positive episode of the day (judge.episodes, gated; priority
+    verification_catch > good_spec > scoped_turn > early_redirect > knew_when_not_to_delegate,
+    via judge.pick_episode) -> facts["episode"]. None -> the session with the best verified share
+    (>= 1 verified batch; ties: more batches); else the most-used human-initiated tooling; else none.
   7 V, H, B_min, C (+ C by cause) today vs the median of the 7 report days before the focus day
     (only days that have the metric). Direction: V up = better; H, B_min, C down = better.
   8 Diagnostics from stored metrics; judge doubt from C_abstain, C:event:uncertain, C_source:regex.
@@ -534,6 +536,7 @@ def facts(conn, day: str, run_id: int | None = None, baseline_days: list[str] | 
                        "evidence": [{"turn_id": e["turn_id"], "note": e["note"]} for e in hev[:MAX_EVIDENCE]]},
         "worst_window": _worst_window(conn, day),
         "pattern": _pattern(conn, day, batches),
+        "episode": _top_episode(conn, day),
         "scored": scored,
         "diagnostics": _diagnostics(m),
         "judge_doubt": _judge_doubt(m),
@@ -541,6 +544,15 @@ def facts(conn, day: str, run_id: int | None = None, baseline_days: list[str] | 
         "strengths": _judge_call("strengths", conn, day, run_id=run_id, default=[]),
         "attribution": _judge_call("attribution", conn, day, default=None),
     }
+
+
+def _top_episode(conn, day: str) -> dict | None:
+    """judge.pick_episode(judge.episodes(day)): line 6's positive episode; any failure -> None."""
+    try:
+        from . import judge
+        return judge.pick_episode(judge.episodes(conn, day))
+    except Exception:
+        return None
 
 
 def _judge_call(name: str, conn, day: str, default=None, **kw):
@@ -641,7 +653,14 @@ def _render_eight(f: dict) -> list[str]:
     else:
         L.append("5. **Worst attention window:** none — no blocked or babysat gaps today.")
     p = f["pattern"]
-    if p and p["kind"] == "verified_session":
+    e = f.get("episode")
+    if e:
+        more = f" ({e['count']}× today)" if e.get("count", 1) > 1 else ""
+        quote = f" — \"{clip(e['evidence_quote'], 80)}\"" if e.get("evidence_quote") else ""
+        chip = " _(uncalibrated)_" if e.get("uncalibrated") else ""
+        L.append(f"6. **Repeat:** {e['title']}{more}: {clip(e['reason'], 120)}{quote}{chip} — "
+                 f"{_turns_ref(e['turn_ids'])}")
+    elif p and p["kind"] == "verified_session":
         how = f" with `{p['command']}`" if p["command"] else ""
         L.append(f"6. **Repeat:** session {p['session']} verified {p['verified']}/{p['batches']} edit batches"
                  f"{how} ({p['human_initiated']} asked for by you) — {_turns_ref(p['turns'])}")

@@ -357,3 +357,26 @@ def test_report_strengths_and_attribution(tmp_path, monkeypatch):
     sec7 = out.split("7. **", 1)[1].split("8. **", 1)[0]
     assert "you vs agent: V asked by you" in sec7 and "C you-preventable 1 / agent error 1 / environment 1" in sec7
     assert re.findall(r"^(\d)\. \*\*", out, re.M) == [str(i) for i in range(1, 9)]
+
+
+def test_attribution_verification_matches_v_human(tmp_path):
+    """asked_by_you is exactly V_human's numerator: default (slash command / hooks) is not 'you asked'."""
+    from scorer import metrics
+    conn = make_db(tmp_path, ["edit a three times"])
+    with conn:   # one turn, three edit -> check batches (one local day whatever the timezone)
+        for tid, init in enumerate(("human", "agent", "default"), 1):
+            ts = f"2026-10-13T10:0{tid}:10+00:00"
+            conn.execute("INSERT INTO tool_call(turn_id, tool_use_id, name, kind, args_summary, started_at,"
+                         " has_result) VALUES (1,?,?,?,?,?,1)", (f"e{tid}", "Edit", "edit", "/tmp/x/a.py", ts))
+            cid = conn.execute("SELECT id FROM tool_call WHERE tool_use_id=?", (f"e{tid}",)).fetchone()[0]
+            conn.execute("INSERT INTO file_edit(tool_call_id, path) VALUES (?, '/tmp/x/a.py')", (cid,))
+            conn.execute("INSERT INTO tool_call(turn_id, tool_use_id, name, kind, bash_intent, initiator,"
+                         " args_summary, started_at, has_result) VALUES (1,?,?,?,?,?,?,?,1)",
+                         (f"t{tid}", "Bash", "bash", "test", init, "pytest -q", f"2026-10-13T10:0{tid}:20+00:00"))
+    day = metrics.verification_batches(conn)[0].day
+    ver = [b for b in metrics.verification_batches(conn, day) if b.tier.startswith("verified")]
+    assert len(ver) == 3
+    v = judge.attribution(conn, day)["verification"]
+    v_human = sum(b.verifier_initiator == "human" for b in ver) / len(ver)
+    assert v["asked_by_you"]["count"] == 1 and v["agent_initiative"]["count"] == 2
+    assert v["asked_by_you"]["count"] / (v["asked_by_you"]["count"] + v["agent_initiative"]["count"]) == v_human

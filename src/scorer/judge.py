@@ -20,8 +20,16 @@ sha1(model + prompt + prev summary + PROMPT_VERSION). Cached hashes are never re
 Metrics (scope day, per run_id; previous C rows for run+day deleted first):
   C:event:<event>, C:cause:<cause>, C:detection:<detection> (cause/detection over corrections only),
   C_abstain, C_source:<api|claude-p|regex|rule>, C:defect_caught, C:resolved,
-  C_labelled (value = labelled turns, n = candidate turns; < n when the report path's cap hit).
+  C_labelled (value = labelled turns, n = candidate turns; < n when the report path's cap hit),
+  C+:<episode> (gated positive episodes; evidence note "<episode>: " + clip(reason, 60)).
 Spec: "Scored by cause, never by count."
+
+Positive episodes (judge-v3, spec §1 "C+"): the same call also returns positive_episode (one of
+EPISODES or null) + episode_reason (<= 120). validate() nulls unknown labels, labels without
+evidence, and reasons quoting > 80 prompt chars. The label alone never counts: `episodes(conn, day)`
+applies a deterministic gate per label (see _episode_gates) and writes C+:<episode> rows.
+First prompts of a session are labelled too (candidates(first=True)) so good_spec can be judged;
+they are excluded from every C row and from the n/labelled stats.
 
 Privacy: prompt text goes to the model only. Logs/stdout carry counts, never prompt text.
 Stored evidence <= 200 chars (judge_label.label); metric_evidence.note uses clip(evidence, 60).
@@ -40,7 +48,7 @@ from pathlib import Path
 
 from .model import DEFINITION_VERSION, clip, local_day, scorer_home
 
-PROMPT_VERSION = "judge-v2"  # v2: user_action / preventable_by_user / action_category / user_strength
+PROMPT_VERSION = "judge-v3"  # v3: positive_episode / episode_reason (v2: user_action, user_strength)
 PROMPT_CHARS = 2000
 SUMMARY_CHARS = 1500
 EVIDENCE_CHARS = 200
@@ -55,6 +63,10 @@ CAUSES = ("instruction_violated", "info_missing", "requirement_changed", "env_fa
 DETECTIONS = ("human_review", "automated_check", "agent_self_review", "unknown")
 SOURCES = ("api", "claude-p", "regex", "rule")
 ACTION_CATEGORIES = ("prompt_specificity", "verification", "context", "task_split", "tooling", "review", "other")
+# positive episodes, in report priority order (line 6 "Repeat" picks the first present)
+EPISODES = ("verification_catch", "good_spec", "scoped_turn", "early_redirect", "knew_when_not_to_delegate")
+REASON_CHARS = 120
+FIRST_SUMMARY = "previous turn: none (session start: this is the human's FIRST prompt of the session)"
 
 DDL = """CREATE TABLE IF NOT EXISTS judge_label(turn_hash TEXT PRIMARY KEY, model TEXT,
   label JSON, at TEXT);
@@ -82,10 +94,15 @@ SCHEMA = {
                           "description": "Short description (max 120 chars) of a good HUMAN move visible in "
                                          "this prompt, grounded in the evidence. Null if none."},
         "strength_category": {"type": "string", "enum": list(ACTION_CATEGORIES)},
+        "positive_episode": {"anyOf": [{"type": "string", "enum": list(EPISODES)}, {"type": "null"}],
+                             "description": "A positive episode the HUMAN shows in this prompt, or null."},
+        "episode_reason": {"type": ["string", "null"],
+                           "description": "Why (max 120 chars), grounded in the evidence; null when "
+                                          "positive_episode is null."},
     },
     "required": ["event", "cause", "detection", "evidence", "confidence", "defect_caught", "resolved",
                  "user_action", "preventable_by_user", "action_category", "user_strength",
-                 "strength_category"],
+                 "strength_category", "positive_episode", "episode_reason"],
     "additionalProperties": False,
 }
 
@@ -126,6 +143,16 @@ user_action: one short imperative telling the human what to do differently next 
 action_category: prompt_specificity | verification | context | task_split | tooling | review | other (closest fit; "other" when user_action is null).
 user_strength: a short description, at most 120 characters, of a good move by the HUMAN visible in this prompt, e.g. "Gave acceptance criteria up front", "Pointed the agent at the failing test", "Caught the defect in review", "Split the task into a fresh session", "Asked for a test run before accepting". It must follow from the evidence quote; do not copy the prompt. Null if there is none (most prompts have none) and when event is abstain.
 strength_category: same categories as action_category ("other" when user_strength is null).
+
+Positive episode (what the HUMAN did well; most prompts have none -> null; null when event is abstain):
+- good_spec: only on the session's FIRST prompt (no previous turn): it states the goal, constraints AND acceptance criteria ("done when ...", a test that must pass).
+- verification_catch: the human asks for a check (run the tests/build/typecheck, review the diff) to catch defects before accepting the work.
+- early_redirect: the human interrupts or corrects the agent early, before it goes down a wrong path, and states a specific reason (not just "stop" or "no").
+- scoped_turn: a small, bounded request with explicit done criteria (e.g. one function or file, "done when X passes").
+- knew_when_not_to_delegate: the human says they fixed or will fix something by hand, or takes over a part the agent kept getting wrong.
+episode_reason: at most 120 characters, why this is a good move, following from the evidence quote; do not copy the prompt. Null when positive_episode is null.
+The evidence quote must also support the positive_episode when you give one.
+When there is no previous agent turn (session start), event is new_requirement or abstain, never correction.
 Call the record_label tool exactly once."""
 
 
@@ -174,9 +201,12 @@ def turn_hash(model: str, prompt: str, summary: str) -> str:
     return hashlib.sha1("\x1f".join((model, prompt, summary, PROMPT_VERSION, _PROMPT_DIGEST)).encode()).hexdigest()
 
 
-def candidates(conn: sqlite3.Connection, *, day: str | None = None, limit: int | None = None) -> list[dict]:
+def candidates(conn: sqlite3.Connection, *, day: str | None = None, limit: int | None = None,
+               first: bool = False) -> list[dict]:
     """Turns with a previous turn in the same session, optionally on one local day.
-    Returns dicts: turn_id, session_id, day, prompt_kind, prompt (clipped input), summary."""
+    first=True also returns each session's first prompt (first=True, prev_id None, FIRST_SUMMARY).
+    Returns dicts: turn_id, prev_id, session_id, day, prompt_kind, prompt (clipped input), summary,
+    pos (0-based position in the whole session), first, prev_interrupted."""
     turns = _rows(conn, "SELECT id, session_id, idx, prompt_at, prompt_text, prompt_kind, end_source"
                         " FROM turn ORDER BY session_id, prompt_at, idx")
     interrupted = {r["turn_id"] for r in _rows(conn, "SELECT turn_id FROM event WHERE kind='interrupt'")}
@@ -187,20 +217,29 @@ def candidates(conn: sqlite3.Connection, *, day: str | None = None, limit: int |
         by_sess.setdefault(t["session_id"], []).append(t)
     out = []
     for lst in by_sess.values():
-        for prev, cur in zip(lst, lst[1:]):
+        for pos, cur in enumerate(lst):
+            if pos == 0 and not first:
+                continue
+            prev = lst[pos - 1] if pos else None
             d = local_day(cur["prompt_at"])
             if day and d != day:
                 continue
-            out.append({"turn_id": cur["id"], "prev_id": prev["id"], "session_id": cur["session_id"],
-                        "day": d, "prompt_kind": cur["prompt_kind"], "prev": prev,
+            out.append({"turn_id": cur["id"], "prev_id": prev["id"] if prev else None,
+                        "session_id": cur["session_id"], "day": d, "prompt_kind": cur["prompt_kind"],
+                        "prev": prev, "pos": pos, "first": pos == 0,
+                        "prev_interrupted": bool(prev and prev["id"] in interrupted),
                         "prompt": build_prompt_text(cur["prompt_text"]), "at": cur["prompt_at"] or ""})
     out.sort(key=lambda c: c["at"], reverse=True)  # most recent first, so --limit keeps the newest
     if limit is not None:
         out = out[:limit]
     for c in out:
+        prev = c.pop("prev")
+        if prev is None:
+            c["summary"] = FIRST_SUMMARY
+            continue
         tools = _rows(conn, "SELECT name, bash_intent, is_error, has_result, args_summary FROM tool_call"
                             " WHERE turn_id = ? ORDER BY started_at, id", (c["prev_id"],))
-        c["summary"] = build_summary(c.pop("prev"), tools, c["prev_id"] in interrupted)
+        c["summary"] = build_summary(prev, tools, c["prev_interrupted"])
     return out
 
 
@@ -211,6 +250,7 @@ def abstain(source: str, reason: str = "", confidence: float = 0.0) -> dict:
             "confidence": confidence, "defect_caught": False, "resolved": None,
             "user_action": None, "preventable_by_user": False, "action_category": "other",
             "user_strength": None, "strength_category": "other",
+            "positive_episode": None, "episode_reason": None,
             "source": source, "reason": reason}
 
 
@@ -244,9 +284,17 @@ def _action_fields(raw: dict, prompt: str, event: str, evidence: str) -> dict:
     st = " ".join(st.split())[:ACTION_CHARS] if isinstance(st, str) else None
     if not st or event == "abstain" or not evidence.strip() or quotes_prompt(st, prompt):
         st = None
+    ep = raw.get("positive_episode")
+    ep = ep if ep in EPISODES else None
+    why = raw.get("episode_reason")
+    why = " ".join(why.split())[:REASON_CHARS] if isinstance(why, str) else None
+    if (not ep or not why or event == "abstain" or not evidence.strip() or evidence not in prompt
+            or quotes_prompt(why, prompt)):
+        ep = why = None
     return {"user_action": act, "preventable_by_user": prev and event != "abstain",
             "action_category": cat if act else "other",
-            "user_strength": st, "strength_category": scat if st else "other"}
+            "user_strength": st, "strength_category": scat if st else "other",
+            "positive_episode": ep, "episode_reason": why}
 
 
 def validate(raw, prompt: str, source: str) -> dict:
@@ -279,7 +327,7 @@ def validate(raw, prompt: str, source: str) -> dict:
     if ev == "abstain":
         label["evidence"] = evidence if evidence in prompt else ""
         label.update(user_action=None, preventable_by_user=False, action_category="other",
-                     user_strength=None, strength_category="other")
+                     user_strength=None, strength_category="other", positive_episode=None, episode_reason=None)
     return label
 
 
@@ -416,7 +464,10 @@ def label_one(c: dict, model: str, chain: list[str], client=None) -> tuple[dict,
                 lab = validate(call_regex(summary, prompt), prompt, "regex")
                 lab["confidence"] = min(lab["confidence"], 0.3) if lab["event"] != "abstain" else 0.0
                 return lab, "regex"
-            return validate(raw, prompt, b), model
+            lab = validate(raw, prompt, b)
+            if c.get("first") and lab["event"] in ("correction", "uncertain"):
+                lab["event"] = "new_requirement"   # no previous agent turn to correct
+            return lab, model
         except Exception as e:  # noqa: BLE001 - fall through to the next backend
             c.setdefault("errors", []).append(f"{b}:{type(e).__name__}")
     return abstain("regex", "all-backends-failed"), "regex"
@@ -526,7 +577,7 @@ def label_candidates(conn, cands: list[dict], *, model: str, chain: list[str] | 
 
 
 def _delete_c_rows(conn, run_id: int, day: str) -> None:
-    where = ("run_id = ? AND scope_type = 'day' AND scope_id = ? AND (metric LIKE 'C:%'"
+    where = ("run_id = ? AND scope_type = 'day' AND scope_id = ? AND (metric LIKE 'C:%' OR metric LIKE 'C+:%'"
              " OR metric IN ('C_abstain', 'C_labelled') OR metric LIKE 'C^_source:%' ESCAPE '^')")
     conn.execute(f"DELETE FROM metric_evidence WHERE metric_value_id IN (SELECT id FROM metric_value WHERE {where})",
                  (run_id, day))
@@ -542,16 +593,45 @@ def _put(conn, run_id, metric, day, value, unit, n, evidence=()):
                      " VALUES (?,?,?,?,?)", (cur.lastrowid, tid, None, None, note))
 
 
-def write_metrics(conn, run_id: int, cands: list[dict]) -> int:
-    """Per day: C rows over labelled candidates, plus C_labelled (value = labelled, n = all)."""
+def _cands_episodes(conn, cands: list[dict]) -> dict[str, list[dict]]:
+    """Gated positive episodes per day over the labels carried by `cands` (best effort)."""
+    by_day: dict[str, list[dict]] = {}
+    for c in sorted(cands, key=lambda c: c["at"]):
+        if c.get("day"):
+            by_day.setdefault(c["day"], []).append(c)
+    out = {}
+    for day, lst in by_day.items():
+        try:
+            out[day] = _episodes(conn, day, [(c, c.get("label")) for c in lst])
+        except Exception:  # noqa: BLE001 - episodes never break the C rows
+            out[day] = []
+    return out
+
+
+def write_metrics(conn, run_id: int, cands: list[dict], eps_by_day: dict | None = None) -> int:
+    """Per day: C rows over labelled candidates, plus C_labelled (value = labelled, n = all).
+    First prompts (c["first"]) never count in C rows; they only feed C+:<episode> (gated episodes,
+    evidence note = "<episode>: " + clip(reason, 60))."""
     by_day: dict[str, list[dict]] = {}
     for c in cands:
         if c.get("day"):
             by_day.setdefault(c["day"], []).append(c)
+    if eps_by_day is None:
+        eps_by_day = _cands_episodes(conn, cands)
     rows = 0
     with conn:
         for day, all_c in by_day.items():
             _delete_c_rows(conn, run_id, day)
+            all_c = [c for c in all_c if not c.get("first")]
+            eg: dict[str, list] = {}
+            for e in eps_by_day.get(day, []):
+                eg.setdefault(f"C+:{e['episode']}", []).append(
+                    (e["turn_id"], f"{e['episode']}: " + clip(e["reason"], 60)))
+            for metric, evs in sorted(eg.items()):
+                _put(conn, run_id, metric, day, len(evs), "episodes", None, evs)
+                rows += 1
+            if not all_c:
+                continue
             lst = [c for c in all_c if c.get("label")]
             _put(conn, run_id, "C_labelled", day, len(lst), "turns", len(all_c))
             rows += 1
@@ -594,19 +674,30 @@ def run_judge(conn: sqlite3.Connection, run_id: int | None, *, limit: int | None
     from .config import load
     model = load().judge_model
     ensure_table(conn)
-    cands = candidates(conn, day=day, limit=limit)
+    cands = candidates(conn, day=day, limit=limit, first=True)
     stats = label_candidates(conn, cands, model=model, chain=chain, client=client,
                              max_calls=max_calls, workers=workers, timeout=timeout)
+    # coverage stats count follow-up turns only (first prompts feed positive episodes, not C)
+    follow = [c for c in cands if not c.get("first")]
+    firsts = [c for c in cands if c.get("first")]
+    lab_n = sum(1 for c in follow if c.get("label"))
+    stats.update(n=len(follow), labelled=lab_n, unlabelled=len(follow) - lab_n,
+                 first_turns=len(firsts), first_labelled=sum(1 for c in firsts if c.get("label")))
     dist: dict[str, int] = {}
     src: dict[str, int] = {}
-    for c in cands:
+    for c in follow:
         if not c.get("label"):
             continue
         dist[c["label"]["event"]] = dist.get(c["label"]["event"], 0) + 1
         s = c["label"].get("source", "?")
         src[s] = src.get(s, 0) + 1
-    stats.update(dist=dist, sources=src, model=model,
-                 metric_rows=write_metrics(conn, run_id, cands) if run_id is not None else 0)
+    eps_by_day = _cands_episodes(conn, cands)
+    eps: dict[str, int] = {}
+    for lst in eps_by_day.values():
+        for e in lst:
+            eps[e["episode"]] = eps.get(e["episode"], 0) + 1
+    stats.update(dist=dist, sources=src, model=model, episodes=eps,
+                 metric_rows=write_metrics(conn, run_id, cands, eps_by_day) if run_id is not None else 0)
     return stats
 
 
@@ -669,13 +760,14 @@ CLUSTER_SYSTEM = {
 }
 
 
-def _day_all(conn, day: str) -> list[tuple[dict, dict | None]]:
-    """(candidate, cached label or None) for `day`, oldest first. Never calls a model."""
+def _day_all(conn, day: str, first: bool = False) -> list[tuple[dict, dict | None]]:
+    """(candidate, cached label or None) for `day`, oldest first. Never calls a model.
+    first=True includes each session's first prompt (positive episodes, strengths)."""
     from .config import load
     ensure_table(conn)
     model = load().judge_model
     out = []
-    for c in sorted(candidates(conn, day=day), key=lambda c: c["at"]):
+    for c in sorted(candidates(conn, day=day, first=first), key=lambda c: c["at"]):
         lab = None
         for m in (model, "regex"):
             lab = _cache_get(conn, turn_hash(m, c["prompt"], c["summary"]))
@@ -928,7 +1020,7 @@ def strengths(conn: sqlite3.Connection, day: str, *, run_id: int | None = None) 
     metric items: verifications you asked for, sessions with every batch verified, defects caught in
     human review, corrections fixed within one turn, low-blocked parallel sessions, human tooling."""
     d = resolve_day(day) or day
-    rows = _day_all(conn, d)
+    rows = _day_all(conn, d, first=True)
     items = sorted(_judge_items(conn, d, "strength", rows), key=_rank_key)[:MAX_ACTION_ITEMS]
     for it in items:
         it.pop("claude_md_line", None)
@@ -939,7 +1031,244 @@ def strengths(conn: sqlite3.Connection, day: str, *, run_id: int | None = None) 
         items += ms
     except Exception:  # noqa: BLE001
         pass
-    return sorted(items, key=_rank_key)
+    for it in items:
+        it["episode"] = None
+    try:
+        eps = _episode_items(_episodes(conn, d, rows))
+    except Exception:  # noqa: BLE001 - episodes are best effort
+        eps = []
+    return eps + sorted(items, key=_rank_key)
+
+
+# --- positive episodes (C+) --------------------------------------------------------------------
+
+EPISODE_TITLE = {"verification_catch": "Verification catch", "good_spec": "Good spec",
+                 "scoped_turn": "Scoped turn", "early_redirect": "Early redirect",
+                 "knew_when_not_to_delegate": "Knew when not to delegate"}
+EPISODE_CATEGORY = {"verification_catch": "verification", "good_spec": "prompt_specificity",
+                    "scoped_turn": "task_split", "early_redirect": "review",
+                    "knew_when_not_to_delegate": "other"}
+SCOPED_MAX_FILES = 3        # scoped_turn: at most this many files ...
+SCOPED_MAX_LINES = 80       # ... and this many lines (added + removed) edited in the turn
+EARLY_MAX_POS = 2           # early_redirect: prompt at session position 1 or 2 (after agent turn 1 or 2)
+STRUGGLE_MIN = 2            # knew_when_not_to_delegate: failed checks or corrections on the file
+CHECK_INTENTS = ("test", "build")
+
+
+def _same_file(a: str | None, b: str | None) -> bool:
+    """Path match across absolute / repo-relative / clip()-truncated ("…") spellings."""
+    if not a or not b:
+        return False
+    trunc = a.endswith("…")
+    a = a.rstrip("…").rstrip("/")
+    b = b.rstrip("/")
+    if not a:
+        return False
+    if trunc:
+        return b.startswith(a) or ("/" + a) in ("/" + b)
+    return a == b or b.endswith("/" + a) or a.endswith("/" + b)
+
+
+def _turn_checks(conn, turn_ids) -> dict[int, list[dict]]:
+    """turn_id -> test/build tool calls [{initiator, is_error}] (bash_intent, else classified)."""
+    from . import classify
+    ids = [t for t in dict.fromkeys(turn_ids) if t is not None]
+    out: dict[int, list[dict]] = {}
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        for r in _rows(conn, "SELECT turn_id, name, kind, bash_intent, initiator, is_error, args_summary"
+                             f" FROM tool_call WHERE turn_id IN ({','.join('?' * len(part))})"
+                             " ORDER BY started_at, id", part):
+            intent = r["bash_intent"]
+            if not intent and (r["kind"] == "bash" or r["name"] in ("Bash", "shell", "exec_command")):
+                intent = classify.bash_intent(r["args_summary"] or "")
+            if intent in CHECK_INTENTS:
+                out.setdefault(r["turn_id"], []).append({"initiator": r["initiator"],
+                                                         "is_error": bool(r["is_error"])})
+    return out
+
+
+def _turn_edits(conn, turn_ids) -> dict[int, list[dict]]:
+    """turn_id -> file_edit rows [{path, lines}] (lines None when unknown: NULL, or 0/0 as stored for
+    Bash-synthesized edits, whose line counts are never measured)."""
+    ids = [t for t in dict.fromkeys(turn_ids) if t is not None]
+    out: dict[int, list[dict]] = {}
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        for r in _rows(conn, "SELECT tc.turn_id, fe.path, fe.lines_added, fe.lines_removed FROM file_edit fe"
+                             " JOIN tool_call tc ON tc.id = fe.tool_call_id"
+                             f" WHERE tc.turn_id IN ({','.join('?' * len(part))})", part):
+            la, lr = r["lines_added"], r["lines_removed"]
+            out.setdefault(r["turn_id"], []).append(
+                {"path": r["path"], "lines": (la or 0) + (lr or 0) or None})
+    return out
+
+
+def _ep(episode: str, c: dict, lab: dict | None, reason: str) -> dict:
+    """One episode. Judge-backed (label names this episode, has a reason and a grounded quote) ->
+    source "judge", uncalibrated; else the deterministic reason, evidence None, source "metrics"."""
+    judged = bool(lab and lab.get("positive_episode") == episode and lab.get("episode_reason")
+                  and (lab.get("evidence") or "").strip() and lab["evidence"] in c.get("prompt", ""))
+    return {"episode": episode, "turn_id": c["turn_id"], "session_id": c["session_id"],
+            "reason": clip(lab["episode_reason"] if judged else reason, REASON_CHARS),
+            "evidence_quote": clip(lab["evidence"], QUOTE_MAX) if judged else None,
+            "source": "judge" if judged else "metrics", "uncalibrated": judged}
+
+
+def _judged(e: dict) -> list[dict]:
+    """Mixed-rule episodes need the judge's why + grounded quote; without them they do not count."""
+    return [e] if e["source"] == "judge" else []
+
+
+def _episodes(conn, day: str, rows) -> list[dict]:
+    """Gated positive episodes for `day` from (candidate, label) rows (oldest first).
+
+    The judge's positive_episode is a proposal; the deterministic gate decides:
+      good_spec          first prompt of the session (judge) AND no later correction-labelled turn
+                         in that session.
+      verification_catch judge label on turn T AND T ran a test/build that failed (is_error) and was
+                         human-initiated, or failed and the next turn of the session has a passing check.
+      early_redirect     judge label AND session position 1..EARLY_MAX_POS AND (event correction OR the
+                         previous agent turn was interrupted).
+      scoped_turn        gate alone: <= SCOPED_MAX_FILES files, <= SCOPED_MAX_LINES lines edited in T,
+                         and every edit batch of T verified_pass.
+      knew_when_not_to_delegate  gate alone: a git-snapshot hand edit (H repair/own) of a file that had
+                         >= STRUGGLE_MIN failed verifications or >= STRUGGLE_MIN correction turns
+                         touching it earlier in the session.
+    Gate-alone episodes carry the judge's reason + quote when the label agrees, else evidence None and
+    source "metrics". Sorted by EPISODES priority, then time."""
+    from . import metrics
+    rows = [(c, lab) for c, lab in rows if c.get("turn_id") is not None]
+    if not rows:
+        return []
+    by_tid = {c["turn_id"]: (c, lab) for c, lab in rows}
+    sess: dict[str, list] = {}
+    for c, lab in rows:
+        sess.setdefault(c["session_id"], []).append((c, lab))
+    nxt: dict[int, int] = {}
+    for lst in sess.values():
+        for (a, _), (b, _) in zip(lst, lst[1:]):
+            nxt[a["turn_id"]] = b["turn_id"]
+    tids = list(by_tid) + [c.get("prev_id") for c, _ in rows]
+    checks = _turn_checks(conn, tids)
+    edits = _turn_edits(conn, tids)
+    batches = metrics.verification_batches(conn, day)
+    bt: dict[int, list] = {}
+    for b in batches:
+        bt.setdefault(b.turn_id, []).append(b)
+    out: list[dict] = []
+
+    for c, lab in rows:
+        tid, ep = c["turn_id"], (lab or {}).get("positive_episode")
+        if ep == "good_spec" and c.get("first"):
+            later = [lb for cc, lb in sess[c["session_id"]] if cc["at"] > c["at"]]
+            if not any(lb and lb.get("event") == "correction" for lb in later):
+                out += _judged(_ep("good_spec", c, lab, ""))
+        elif ep == "verification_catch":
+            ch = checks.get(tid, [])
+            failed = [x for x in ch if x["is_error"]]
+            human_fail = any(x["initiator"] == "human" for x in failed)
+            n = nxt.get(tid)
+            fixed = bool(failed) and n is not None and (
+                any(b.tier == "verified_pass" for b in bt.get(n, []))
+                or (checks.get(n) and not checks[n][-1]["is_error"]))
+            if human_fail or fixed:
+                out += _judged(_ep("verification_catch", c, lab, ""))
+        elif ep == "early_redirect":
+            pos = c.get("pos")
+            if pos is not None and 1 <= pos <= EARLY_MAX_POS and (
+                    lab.get("event") == "correction" or c.get("prev_interrupted")):
+                out += _judged(_ep("early_redirect", c, lab, ""))
+        # scoped_turn: deterministic gate, judge only adds the why
+        ed = edits.get(tid, [])
+        bs = bt.get(tid, [])
+        if ed and bs and all(b.tier == "verified_pass" for b in bs):
+            files = {e["path"] for e in ed if e["path"]}
+            lines = [e["lines"] for e in ed]
+            if files and len(files) <= SCOPED_MAX_FILES and None not in lines and sum(lines) <= SCOPED_MAX_LINES:
+                out.append(_ep("scoped_turn", c, lab, f"Small, verified change: {len(files)} file(s), "
+                                                      f"{sum(lines)} line(s), checks passed"))
+
+    # knew_when_not_to_delegate: hand edit on a file the agent was struggling with
+    try:
+        hev = metrics.hand_edits(conn, day)["evidence"]
+    except Exception:  # noqa: BLE001
+        hev = []
+    seen: set = set()
+    for e in hev:
+        note = e.get("note") or ""
+        kind, _, path = note.partition(": ")
+        if kind not in ("repair", "own") or not path or e.get("turn_id") is None:
+            continue
+        h = conn.execute("SELECT session_id, prompt_at FROM turn WHERE id = ?", (e["turn_id"],)).fetchone()
+        if not h or e["turn_id"] in seen:
+            continue
+        sid, h_at = h[0], h[1] or ""
+        fails = [b for b in batches if b.session_id == sid and b.tier == "verified_fail"
+                 and any(_same_file(path, p) for p in b.paths)
+                 and (by_tid.get(b.turn_id, ({"at": ""},))[0]["at"] or "") <= h_at]
+        corr = [c for c, lab in sess.get(sid, []) if lab and lab.get("event") == "correction"
+                and c["at"] <= h_at
+                and any(_same_file(path, x["path"]) for t in (c["turn_id"], c.get("prev_id"))
+                        for x in edits.get(t, []))]
+        n_f, n_c = len({b.turn_id for b in fails}), len(corr)
+        if max(n_f, n_c) < STRUGGLE_MIN:
+            continue
+        seen.add(e["turn_id"])
+        hc, hlab = by_tid.get(e["turn_id"], (None, None))
+        n = nxt.get(e["turn_id"])
+        if n is not None and not (hlab and hlab.get("positive_episode") == "knew_when_not_to_delegate"):
+            hc2, hlab2 = by_tid[n]
+            if hlab2 and hlab2.get("positive_episode") == "knew_when_not_to_delegate":
+                hc, hlab = hc2, hlab2
+        if hc is None:
+            hc = {"turn_id": e["turn_id"], "session_id": sid, "prompt": ""}
+        what = (f"{n_f} failed check(s)" if n_f >= STRUGGLE_MIN else f"{n_c} correction(s)")
+        name = clip(path.rstrip("…").rstrip("/").rsplit("/", 1)[-1] or path, 40)
+        out.append(_ep("knew_when_not_to_delegate", hc, hlab,
+                       f"Fixed {name} by hand after {what} on it"))
+
+    order = {c["turn_id"]: i for i, (c, _) in enumerate(rows)}
+    out.sort(key=lambda x: (EPISODES.index(x["episode"]), order.get(x["turn_id"], 1 << 30)))
+    return out
+
+
+def episodes(conn: sqlite3.Connection, day: str) -> list[dict]:
+    """Positive episodes of `day` ('today' | YYYY-MM-DD) from cached judge labels + deterministic gates.
+    Item: {episode, turn_id, session_id, reason (<= 120), evidence_quote (<= 80 or None), source
+    ("judge" | "metrics"), uncalibrated}. Never calls a model; run `scorer judge` first."""
+    d = resolve_day(day) or day
+    return _episodes(conn, d, _day_all(conn, d, first=True))
+
+
+def pick_episode(eps: list[dict]) -> dict | None:
+    """The strongest episode by EPISODES priority (judge-backed first, then earliest), plus every
+    turn id with the same label: {episode, title, reason, evidence_quote, source, uncalibrated,
+    turn_id, turn_ids, count}. None when `eps` is empty."""
+    if not eps:
+        return None
+    best = min(eps, key=lambda e: (EPISODES.index(e["episode"]) if e["episode"] in EPISODES else 99,
+                                   e.get("source") != "judge"))
+    same = [e["turn_id"] for e in eps if e["episode"] == best["episode"]]
+    return dict(best, title=EPISODE_TITLE.get(best["episode"], best["episode"]),
+                turn_ids=list(dict.fromkeys([best["turn_id"]] + same)), count=len(same))
+
+
+def _episode_items(eps: list[dict]) -> list[dict]:
+    """Strength items for episodes, one per label in priority order (episode = the label)."""
+    out = []
+    for ep in EPISODES:
+        lst = [e for e in eps if e["episode"] == ep]
+        if not lst:
+            continue
+        best = pick_episode(lst)
+        quote = next((e["evidence_quote"] for e in lst if e.get("evidence_quote")), "")
+        judged = any(e["source"] == "judge" for e in lst)
+        out.append({"text": clip(f"{EPISODE_TITLE[ep]}: {best['reason']}", ACTION_CHARS),
+                    "category": EPISODE_CATEGORY[ep], "count": len(lst), "turn_ids": best["turn_ids"],
+                    "example_quote": clip(quote, QUOTE_MAX), "uncalibrated": judged,
+                    "source": "judge" if judged else "metrics", "episode": ep})
+    return out
 
 
 # --- attribution: you vs agent -----------------------------------------------------------------
@@ -958,8 +1287,10 @@ def attribution(conn: sqlite3.Connection, day: str) -> dict:
     """Who owns today's outcomes. corrections (cached judge labels): user_preventable (cause
     info_missing / requirement_changed, or preventable_by_user) | agent_error (instruction_violated,
     not preventable) | environment (env_failure) | unclear. verification (edit batches):
-    asked_by_you (verifier initiator human or default = your hooks/CLAUDE.md; via_config counts the
-    latter) | agent_initiative | none. tooling: you | agent | default (events by initiator)."""
+    asked_by_you (verifier initiator human: your prompt asked for the check; same numerator as metrics
+    V_human, so asked_by_you / (asked_by_you + agent_initiative) == V_human) | agent_initiative (every
+    other verified batch, incl. initiator default = a slash command / hooks / CLAUDE.md, as in V_human)
+    | none (inspected or unverified). tooling: you | agent | default (events by initiator)."""
     from . import metrics
     d = resolve_day(day) or day
     corr = _bucket(("user_preventable", "agent_error", "environment", "unclear"))
@@ -977,13 +1308,11 @@ def attribution(conn: sqlite3.Connection, day: str) -> dict:
             k = "unclear"
         _add(corr, k, c["turn_id"])
     ver = _bucket(("asked_by_you", "agent_initiative", "none"))
-    ver["asked_by_you"]["via_config"] = 0
     for b in metrics.verification_batches(conn, d):
-        if not b.tier.startswith("verified"):
+        if b.tier not in ("verified_pass", "verified_fail"):
             _add(ver, "none", b.turn_id)
-        elif b.verifier_initiator in ("human", "default"):
+        elif b.verifier_initiator == "human":
             _add(ver, "asked_by_you", b.turn_id)
-            ver["asked_by_you"]["via_config"] += int(b.verifier_initiator == "default")
         else:
             _add(ver, "agent_initiative", b.turn_id)
     tool = _bucket(("you", "agent", "default"))

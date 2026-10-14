@@ -12,6 +12,7 @@ Principle: score the human's choices, not the agent. Every event carries `initia
 |---|---|---|---|---|
 | V | **Verification after changes** | share of edit batches followed by a *relevant* test/build/typecheck before the next edit batch; final state verified? Only `initiator=human` counts in candidate mode. Counter-metric: share of verifications that fail or cause a follow-up edit (0% = decorative). | hooks + Bash intent classifier + git snapshot | Fact |
 | C | **Correction episodes** | each correction labelled on 3 axes: event (correction / new requirement / clarification / uncertain), cause (instruction violated / info missing / requirement changed / env failure / unknown), detection (human review / automated check / agent self-review / unknown). Includes defects caught (who caught, resolved?). Scored by cause, never by count. | LLM judge, quoted evidence, abstention, calibrated (κ ≥ 0.6 on 50 double-labelled turns) | Judge |
+| C+ | **Positive episodes** (what you did well) | same judge call as C (`positive_episode` + `episode_reason` ≤ 120, judge-v3), one label per turn or null; the label only counts when its deterministic gate passes. **good_spec**: the session's first prompt has goal + constraints + acceptance criteria (judge) and no later turn of that session is labelled correction. **verification_catch**: the human asked for a check (judge) and it found a defect: a human-initiated test/build call in that turn failed (`is_error=1`), or it failed and the next turn has a passing check. **early_redirect**: correction or interrupt at session position 1–2 (judge: specific reason stated; gate: event=correction or previous agent turn interrupted). **scoped_turn**: ≤ 3 files and ≤ 80 lines edited in the turn (`file_edit`), every edit batch `verified_pass`; judge adds "explicit done criteria". **knew_when_not_to_delegate**: a git-snapshot hand edit (H repair/own) on a file with ≥ 2 failed verifications or ≥ 2 correction turns touching it earlier in the session. Gate-only labels (scoped_turn, knew_when_not_to_delegate) without a grounded quote are stored with `evidence: null`, source `metrics`. Stored as `C+:<episode>` per day, evidence note `<episode>: <reason ≤ 60>`. Report line 6 picks by priority verification_catch > good_spec > scoped_turn > early_redirect > knew_when_not_to_delegate. Shown, never summed into C. | LLM judge (same evidence rules as C: quote is an exact prompt substring, ≤ 200 stored / ≤ 80 shown, abstention) + metrics gates; uncalibrated | Judge |
 | H | **Hand-edits outside the agent** | git delta per turn − agent edit calls (incl. Bash writes). Split: repair of agent-touched files vs own work. Self: silent repair cost. Candidate: knew when not to use the agent. | git snapshot at Stop + tool calls | Correlated |
 | B | **Blocked-agent minutes** | per session: Stop → next prompt while another session is active; plus "attended gaps" (gap <2 min + prompt ≤5 words). | hooks | Fact |
 | E | **Response to evidence** (candidate) | after a failing test / contradiction: investigate, revise, or ship anyway, over the next 2 turns | judge | Judge |
@@ -44,7 +45,7 @@ Turn duration (agent metric), turns per task, prompt specificity, plan-mode chec
 3. Top two correction episodes: cause, and the prompt that would have prevented each.
 4. Unverified or hand-repaired state right now: sessions, files, what to run before pushing.
 5. Worst attention window (blocked / babysitting), minutes lost.
-6. One pattern to repeat, with evidence.
+6. One pattern to repeat, with evidence: the strongest positive episode (C+) of the day, else the best-verified session / human tooling.
 7. Scored metrics vs 7-day baseline.
 8. Diagnostics in one line + what the judge was unsure about.
 
@@ -61,9 +62,13 @@ Gaps:       for t, next in consecutive turns of a session:
               gap = next.start - t.end; prompt in another session during gap -> switched
               gap > 15min -> break (excluded); crash turn -> undefined
 Verify:     batch = maximal run of FileEdit not split by a prompt or test|build Bash
-            verified(batch) = Bash(intent in test|build, relevant) after batch, before next prompt,
+            lanes: main thread and each subagent sidechain form their own batches (never interleaved)
+            window(batch) = after its last edit, before the lane's next edit batch or the next prompt
+            verified(batch) = Bash(intent in test|build, relevant) in window,
                               WITH tool_result (backgrounded without result = no)
-            tier: verified_pass | verified_fail | inspected (git diff / Read of edited file) | none
+            tier (v2): the LAST relevant check in the window decides: failed -> verified_fail,
+                  passed -> verified_pass (recovered = an earlier one in the window failed: red -> green,
+                  counted in V_recovered) | inspected (git diff / Read of edited file) | none
             final = last batch verified AND no later FileEdit
 ```
 
