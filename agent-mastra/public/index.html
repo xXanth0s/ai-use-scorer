@@ -60,6 +60,14 @@
   .suggest { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
   .suggest button { border: 1px solid var(--line); background: #fff; border-radius: var(--r); padding: 6px 10px; font-size: 13px; cursor: pointer; text-align: left; }
   .suggest button:hover { border-color: var(--clay); }
+  /* quick-response tiles (Sherpa ai-elements Suggestion: outline, rounded-full, size sm, wraps) */
+  .tiles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 2px; }
+  .tile { border: 1px solid var(--line); background: var(--bg); color: var(--pine); border-radius: 999px;
+          padding: 4px 14px; min-height: 30px; font-size: 13px; font-weight: 500; line-height: 1.35; cursor: pointer;
+          text-align: left; white-space: normal; transition: background .12s, border-color .12s; }
+  .tile:hover { background: var(--soft); border-color: var(--clay); }
+  .tile:focus-visible { outline: 2px solid var(--clay); outline-offset: 2px; }
+  .tile:active { transform: translateY(1px); }
   form { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-end; }
   textarea { flex: 1; resize: none; min-height: 42px; max-height: 180px; border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; font-size: 14px; outline: none; }
   textarea:focus { border-color: var(--clay); }
@@ -195,7 +203,27 @@
     requestAnimationFrame(() => { m.pending = false; m.body.innerHTML = markdown(m.text, m.cites); scroll(); });
   }
   function stepCount(m) { m.sum.textContent = `${m.count} step${m.count === 1 ? '' : 's'}`; m.steps.hidden = m.count === 0; }
-  function parentFor(m) { return m.open.length ? m.byId.get(m.open[m.open.length - 1]).kids : m.steps; }
+  function parentFor(m, ev) {
+    // sub-agent tool events name their delegation (subagent_id); otherwise nest under the open one
+    const sub = ev && ev.subagent_id && m.byId.get(ev.subagent_id);
+    if (sub && sub.kids) return sub.kids;
+    if (ev && ev.agent === 'analyst') return m.steps;
+    return m.open.length ? m.byId.get(m.open[m.open.length - 1]).kids : m.steps;
+  }
+  /** Tiles under the last assistant message only; clicking one sends its prompt. */
+  function renderTiles(m) {
+    document.querySelectorAll('.tiles').forEach((t) => t.remove());
+    if (!m.tiles || !m.tiles.length) return;
+    const box = el('div', 'tiles');
+    for (const it of m.tiles) {
+      if (!it || !it.label || !it.prompt) continue;
+      const b = el('button', 'tile', String(it.label).slice(0, 40));
+      b.type = 'button'; b.title = String(it.prompt).slice(0, 200);
+      b.addEventListener('click', () => send(String(it.prompt).slice(0, 200)));
+      box.appendChild(b);
+    }
+    if (box.childElementCount) m.root.appendChild(box);
+  }
 
   function onEvent(m, ev) {
     switch (ev.type) {
@@ -207,7 +235,7 @@
         head.append(el('span', 'name', ev.name), st);
         const sum = el('div', 'sum');
         s.append(head, el('pre', null, JSON.stringify(ev.input ?? {}, null, 2)), sum);
-        parentFor(m).appendChild(s);
+        parentFor(m, ev).appendChild(s);
         m.byId.set(ev.id, { s, st, sum });
         m.count++; stepCount(m); break;
       }
@@ -240,6 +268,7 @@
         x.st.textContent = failed ? 'failed' : 'done'; x.st.className = `st ${failed ? 'err' : 'ok'}`;
         x.sum.textContent = `brief: ${ev.summary || ''}`; break;
       }
+      case 'suggestions': m.tiles = Array.isArray(ev.items) ? ev.items.slice(0, 4) : []; break;
       case 'error': m.errs.appendChild(el('div', 'err-line', `⚠ ${ev.message || 'error'}`)); break;
       case 'done': m.done = ev; break;
     }
@@ -249,6 +278,7 @@
   async function send(text) {
     text = text.trim(); if (!text || ctrl) return;
     suggest.hidden = true;
+    document.querySelectorAll('.tiles').forEach((t) => t.remove());   // tiles vanish while a new answer streams
     addUser(text);
     history.push({ role: 'user', content: text });
     const m = newAssistant();
@@ -286,7 +316,8 @@
       m.foot.textContent = [dn ? `${dn.backend || '?'} · ${dn.model || 'no model'}` : 'no done event',
         `${(ms / 1000).toFixed(1)} s`, `${m.cites.size} citation${m.cites.size === 1 ? '' : 's'}`].join(' · ');
       if (m.text.trim()) history.push({ role: 'assistant', content: m.text });
-      ctrl = null; setBusy(false); q.focus(); scroll();
+      ctrl = null;
+      renderTiles(m); setBusy(false); q.focus(); scroll();
     }
   }
   function setBusy(b) {

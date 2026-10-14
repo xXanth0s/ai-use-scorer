@@ -5,10 +5,17 @@ Public API (serve.py / report.py call these):
   stream_chat(conn, messages, day) -> Iterator[dict]   # text-delta | tool-start | tool-result | error | done
   narrative(conn, day, facts) -> str | None            # markdown, cites turns as [turn:<id>]
   run_tool(conn, name, input) -> dict                  # {ok, data, summary, citations}
+  suggest_followups(client, question, answer, tools) -> list[{label, prompt}]   # 2-4 or []
 
-Privacy: prompt_text / args_summary / paths leave the DB only via model.clip(..., 80), including
-tool results sent to the model. query_db runs on a separate read-only connection where those
-columns are only reachable through clipping temp views (direct reads are denied by an authorizer).
+stream_chat sends {type: "suggestions", items: [{label ≤ 40, prompt ≤ 200}]} right before `done`
+when the follow-up call succeeds (Sherpa's turn-chips pattern: derived after the answer by one
+bounded Haiku call with a strict tool schema, never asked of the main loop; failures send nothing).
+
+Privacy: the DB stores full text; prompt_text / args_summary / notes / paths (cwd, repo, files…)
+leave it only as ≤ 80-char excerpts (model.clip, or clip_path for paths: the tail is kept),
+including tool results sent to the model. query_db runs on a separate read-only connection where
+those columns are only reachable through clipping temp views (direct reads are denied by an
+authorizer); a result that read any of them has every string cell clipped to 80.
 
 Threading: every tool opens its own read-only connection from the DB file path, which is resolved
 eagerly when stream_chat() is called, so the returned generator may be consumed on another thread.
@@ -25,14 +32,17 @@ from datetime import datetime
 from typing import Any, Iterator
 
 from .db import DDL, latest_run_id
-from .model import clip, local_day, parse_ts
+from .model import clip, local_day, local_tz, parse_ts
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_MODEL = "claude-sonnet-5-5"
+SUGGEST_MODEL = "claude-haiku-5-5"   # quick-response tiles: one bounded call after the answer
+SUGGEST_TIMEOUT_S = 6.0
 MAX_STEPS = 8
 MAX_TOKENS = 4000          # per step; thinking (always on for Opus 5.5) counts against it
 EFFORT = "low"
 ROW_CAP = 200
+PREAMBLE_HOLD = 160        # chars of a step's text held back: a step that ends in tool_use drops them
 QUERY_TIMEOUT_S = 2.0
 NO_KEY_MSG = "no API key — the deterministic report still works"
 
@@ -43,13 +53,25 @@ _INFISICAL_CMD = [
 ]
 _CACHE: dict[str, Any] = {}
 
-# Raw columns that must only surface clipped. (table, column)
+# Raw columns that must only surface clipped: (table, column) -> "text" (keep the head) or
+# "path" (keep the tail: "…/src/scorer/metrics.py").
 _SENSITIVE = {
-    ("turn", "prompt_text"), ("tool_call", "args_summary"), ("tool_call", "initiator_rule"),
-    ("file_edit", "path"), ("file_edit", "manifest_dir"), ("event", "data"),
-    ("session", "transcript_path"),
+    ("turn", "prompt_text"): "text", ("tool_call", "args_summary"): "text",
+    ("tool_call", "initiator_rule"): "text", ("event", "data"): "text",
+    ("metric_evidence", "note"): "text", ("session", "branch"): "text", ("git_change", "author"): "text",
+    ("file_edit", "path"): "path", ("file_edit", "manifest_dir"): "path",
+    ("session", "cwd"): "path", ("session", "repo"): "path", ("session", "transcript_path"): "path",
+    ("git_change", "repo"): "path", ("git_change", "files"): "path",
 }
-_CLIP_RESULT_COLS = {"prompt_text", "args_summary", "path"}
+CLIP = 80
+
+
+def clip_path(p: str | None, n: int = CLIP) -> str:
+    """Single line, <= n chars, keeping the tail of a path ("…/src/scorer/metrics.py")."""
+    if not p:
+        return ""
+    s = " ".join(str(p).split())
+    return s if len(s) <= n else "…" + s[-(n - 1):]
 
 
 # --- key ------------------------------------------------------------------------------------------
@@ -133,7 +155,7 @@ Bash intent: split on && ; |, strip cd/env/npx/uv run wrappers, classify first t
 Relevant test: nearest manifest dir (package.json|pyproject.toml|go.mod|Cargo.toml) of the edited files vs cwd + path args.
 
 ## Storage
-Times are ISO-8601 UTC strings. A "day" is the report day: the configured timezone shifted by day_cutoff (default 04:00 — a turn at 02:30 belongs to the previous day). Never derive days with substr(prompt_at,1,10); use the day values that list_sessions / get_metric return (metric scope_id). metric_value rows belong to an ingest run: always filter run_id = (SELECT max(id) FROM ingest_run). scope_type is "day" (scope_id YYYY-MM-DD local), "session" (session id) or "all". metric_evidence links metric_value rows to turns/tool calls with a short note.
+Times in the DB are ISO-8601 UTC strings (list_sessions returns them converted to local time, with the offset — quote those). A "day" is the report day: the configured timezone shifted by day_cutoff (default 04:00 — a turn at 02:30 belongs to the previous day). Never derive days with substr(prompt_at,1,10); use the day values that list_sessions / get_metric return (metric scope_id). metric_value rows belong to an ingest run: always filter run_id = (SELECT max(id) FROM ingest_run). scope_type is "day" (scope_id YYYY-MM-DD local), "session" (session id) or "all". metric_evidence links metric_value rows to turns/tool calls with a short note.
 """
 
 _SYSTEM = f"""<identity>
@@ -142,12 +164,12 @@ You are the analyst for one human's own coding-agent usage (Claude Code and Code
 
 <definitions>
 {_DEFINITIONS}
-SQLite schema (query_db is read-only; turn.prompt_text, tool_call.args_summary, file_edit.path and other free-text columns are already clipped to 80 chars — that is deliberate privacy, do not try to work around it):
+SQLite schema. query_db is read-only. The DB stores full text, but every tool only shows ≤ 80-char excerpts of free-text and path columns (turn.prompt_text, tool_call.args_summary, metric_evidence.note, file_edit.path, session.cwd/repo/branch, git_change.files/author …; paths keep their tail, e.g. "…/src/scorer/metrics.py"). That is deliberate privacy — do not try to work around it, and do not tell the user the data itself is truncated:
 {DDL.strip()}
 </definitions>
 
 <tools>
-- list_sessions(day): sessions active that day — start here for "what did I do".
+- list_sessions(day): sessions active that day (local times; each session's first turn gets a citation number n) — start here for "what did I do".
 - get_metric(metric, day, scope_type): metric values from the latest run plus evidence turns, each with a citation number n.
 - get_turn(turn_id): one turn in detail (clipped prompt, timings, tool calls, edits, evidence); it gets a citation number n.
 - query_db(sql, limit): anything else, single SELECT/WITH, ≤ 200 rows. Rows that include a turn_id column get citation numbers.
@@ -171,7 +193,7 @@ TOOLS = [
     {
         "name": "query_db",
         "description": "Run one read-only SQL SELECT (or WITH … SELECT) against the scorer SQLite DB. "
-                       "Free-text columns come back clipped to 80 chars. Returns {columns, rows, truncated}. "
+                       "Free-text and path columns come back as ≤ 80-char excerpts. Returns {columns, rows, truncated}. "
                        "Filter metric_value by run_id = (SELECT max(id) FROM ingest_run).",
         "input_schema": {"type": "object", "properties": {
             "sql": {"type": "string", "description": "A single SELECT/WITH statement."},
@@ -197,7 +219,8 @@ TOOLS = [
     },
     {
         "name": "list_sessions",
-        "description": "Sessions active on a local day: id, agent, repo, turns, first/last prompt, active seconds.",
+        "description": "Sessions active on a local day: id, agent, repo, turns, first/last prompt (local time), "
+                       "active seconds; each session's first turn carries a citation number n.",
         "input_schema": {"type": "object", "properties": {
             "day": {"type": "string", "description": "Local YYYY-MM-DD; default = the day on screen."}}},
     },
@@ -300,27 +323,45 @@ if hasattr(sqlite3, "SQLITE_RECURSIVE"):
 _DENIED_FUNCS = {"load_extension", "readfile", "writefile", "edit", "fts3_tokenizer"}
 
 
-def _authorizer(action, a1, a2, dbname, src):
-    if action not in _ALLOWED_ACTIONS:
-        return sqlite3.SQLITE_DENY
-    if action == sqlite3.SQLITE_READ and src is None and dbname != "temp" and (a1, a2) in _SENSITIVE:
-        return sqlite3.SQLITE_DENY   # only reachable through the clipping temp views
-    if action == sqlite3.SQLITE_FUNCTION and (a2 or "").lower() in _DENIED_FUNCS:
-        return sqlite3.SQLITE_DENY
-    return sqlite3.SQLITE_OK
+def _make_authorizer(touched: set):
+    """Deny writes and raw reads of sensitive main columns; record which sensitive columns a
+    statement reads through the clipping views (the view's own columns arrive as dbname 'temp')."""
+    def auth(action, a1, a2, dbname, src):
+        if action not in _ALLOWED_ACTIONS:
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_READ and (a1, a2) in _SENSITIVE:
+            if src is None and dbname != "temp":
+                return sqlite3.SQLITE_DENY   # only reachable through the clipping temp views
+            if dbname == "temp":
+                touched.add((a1, a2))
+        if action == sqlite3.SQLITE_FUNCTION and (a2 or "").lower() in _DENIED_FUNCS:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+    return auth
 
 
-def _guarded(path: str) -> sqlite3.Connection:
+def _clip_sql(v):
+    return None if v is None else clip(v, CLIP)
+
+
+def _clip_path_sql(v):
+    return None if v is None else clip_path(v, CLIP)
+
+
+def _guarded(path: str, touched: set | None = None) -> sqlite3.Connection:
     c = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
-    c.create_function("_clip80", 1, lambda s: None if s is None else clip(s, 80), deterministic=True)
+    c.create_function("_clip80", 1, _clip_sql, deterministic=True)
+    c.create_function("_clippath80", 1, _clip_path_sql, deterministic=True)
     for table in sorted({t for t, _ in _SENSITIVE}):
         cols = [r[1] for r in c.execute(f"PRAGMA main.table_info({table})").fetchall()]
         if not cols:
             continue
-        sel = ", ".join(f"_clip80({col}) AS {col}" if (table, col) in _SENSITIVE else col for col in cols)
+        sel = ", ".join(
+            f"{'_clippath80' if _SENSITIVE[(table, col)] == 'path' else '_clip80'}({col}) AS {col}"
+            if (table, col) in _SENSITIVE else col for col in cols)
         c.execute(f"CREATE TEMP VIEW {table} AS SELECT {sel} FROM main.{table}")
     c.execute("PRAGMA query_only=ON")
-    c.set_authorizer(_authorizer)
+    c.set_authorizer(_make_authorizer(touched if touched is not None else set()))
     return c
 
 
@@ -334,8 +375,9 @@ def _query_db(src: _Src, sql: Any, limit: Any = 50) -> dict:
         limit = 50
     if not src.path:
         return {"error": "query_db needs a file-backed database"}
+    touched: set = set()
     try:
-        c = _guarded(src.path)
+        c = _guarded(src.path, touched)
     except sqlite3.Error as e:
         return {"error": f"cannot open database read-only: {e}"}
     deadline = time.monotonic() + QUERY_TIMEOUT_S
@@ -356,14 +398,17 @@ def _query_db(src: _Src, sql: Any, limit: Any = 50) -> dict:
         return {"error": str(e)}
     finally:
         c.close()
+    # A statement that read any sensitive column (even inside group_concat / || / json_*) gets every
+    # string cell clipped to 80; otherwise (ids, metric names, timestamps) the cap is 200.
+    cap = CLIP if touched else 200
     rows = []
     for r in raw[:limit]:
         row = []
-        for col, v in zip(cols, r):
+        for v in r:
             if isinstance(v, bytes):
                 v = f"<{len(v)} bytes>"
-            if isinstance(v, str) and (col.lower() in _CLIP_RESULT_COLS or len(v) > 200):
-                v = clip(v, 80) if col.lower() in _CLIP_RESULT_COLS else clip(v, 200)
+            if isinstance(v, str) and len(v) > cap:
+                v = clip(v, cap)
             row.append(v)
         rows.append(row)
     return {"columns": cols, "rows": rows, "truncated": len(raw) > limit}
@@ -406,7 +451,8 @@ def _get_turn(src: _Src, turn_id: Any) -> dict:
     cost = [a["cost_usd"] for a in api if a["cost_usd"] is not None]
     data = {
         "turn_id": turn_id,
-        "session": {"id": t["session_id"], "agent": t["agent"], "repo": _base(t["repo"]), "cwd": _base(t["cwd"])},
+        "session": {"id": t["session_id"], "agent": t["agent"], "repo": clip_path(_base(t["repo"])),
+                    "cwd": clip_path(_base(t["cwd"]))},
         "idx": t["idx"],
         "prompt": clip(t["prompt_text"], 80),
         "prompt_kind": t["prompt_kind"],
@@ -430,12 +476,13 @@ def _get_turn(src: _Src, turn_id: Any) -> dict:
                       "output_tok": sum(a["output_tok"] or 0 for a in api),
                       "context_pct_max": round(max(occ), 1) if occ else None,
                       "cost_usd": round(sum(cost), 4) if cost else None},
-        "file_edits": [{"file": clip(_base(e["path"]), 80), "lines": f"+{e['lines_added'] or 0}/-{e['lines_removed'] or 0}",
+        "file_edits_total": len(edits),
+        "file_edits": [{"file": clip_path(_base(e["path"]), 80), "lines": f"+{e['lines_added'] or 0}/-{e['lines_removed'] or 0}",
                         "user_modified": bool(e["user_modified"])} for e in edits[:40]],
         "metric_evidence": [{"metric": e["metric"], "scope": f"{e['scope_type']}:{e['scope_id']}",
                              "note": clip(e["note"], 80)} for e in ev],
     }
-    label = f"turn {turn_id} · {_base(t['repo']) or t['agent'] or ''} · {clip(t['prompt_text'], 40)}"
+    label = f"turn {turn_id} · {clip_path(_base(t['repo']), 30) or t['agent'] or ''} · {clip(t['prompt_text'], 40)}"
     cite = [{"turn_id": turn_id, "session_id": t["session_id"], "label": clip(label, 80), "_slot": data}]
     summary = (f"turn {turn_id} · {len(calls)} tool calls · {len(edits)} edits"
                + (" · interrupted" if interrupted else ""))
@@ -502,7 +549,8 @@ def _get_metric(src: _Src, metric: Any, day: Any = None, scope_type: Any = "day"
         evidence.append(row)
         if e["turn_id"] is not None:
             cites.append({"turn_id": e["turn_id"], "session_id": e["session_id"],
-                          "label": clip(f"turn {e['turn_id']} · {_base(e['repo'])} · {row['note']}", 80), "_slot": row})
+                          "label": clip(f"turn {e['turn_id']} · {clip_path(_base(e['repo']), 30)} · {row['note']}", 80),
+                          "_slot": row})
     data = {"metric": metric, "run_id": rid, "scope_type": scope_type,
             "values": [{"metric": v["metric"], "scope_id": v["scope_id"], "value": v["value"], "unit": v["unit"],
                         "n": v["n"]} for v in vals],
@@ -517,14 +565,20 @@ def _get_metric(src: _Src, metric: Any, day: Any = None, scope_type: Any = "day"
 
 # --- list_sessions -------------------------------------------------------------------------------------
 
+def _local_ts(ts: str | None) -> str | None:
+    d = parse_ts(ts)
+    return d.astimezone(local_tz()).isoformat(timespec="seconds") if d else ts
+
+
 def _list_sessions(src: _Src, day: Any = None, default_day: str | None = None) -> dict:
     day = day if isinstance(day, str) and day.strip() else default_day
     if not day or day.lower() == "today":
         day = _today()
     c = src.open()
     try:
-        rows = _rows(c, "SELECT t.session_id, t.prompt_at, t.agent_finished_at, s.agent, s.repo, s.cwd"
-                        " FROM turn t LEFT JOIN session s ON s.id = t.session_id WHERE t.prompt_at IS NOT NULL")
+        rows = _rows(c, "SELECT t.id, t.session_id, t.prompt_at, t.agent_finished_at, s.agent, s.repo, s.cwd"
+                        " FROM turn t LEFT JOIN session s ON s.id = t.session_id WHERE t.prompt_at IS NOT NULL"
+                        " ORDER BY t.prompt_at, t.id")
     finally:
         src.close(c)
     by: dict[str, dict] = {}
@@ -532,7 +586,8 @@ def _list_sessions(src: _Src, day: Any = None, default_day: str | None = None) -
         if local_day(r["prompt_at"]) != day:
             continue
         s = by.setdefault(r["session_id"], {"id": r["session_id"], "agent": r["agent"],
-                                            "repo": _base(r["repo"] or r["cwd"]), "turns": 0,
+                                            "repo": clip_path(_base(r["repo"] or r["cwd"])), "turns": 0,
+                                            "first_turn_id": r["id"],
                                             "first_ts": r["prompt_at"], "last_ts": r["prompt_at"], "active_s": 0.0})
         s["turns"] += 1
         s["first_ts"] = min(s["first_ts"], r["prompt_at"])
@@ -541,10 +596,15 @@ def _list_sessions(src: _Src, day: Any = None, default_day: str | None = None) -
         if d and d > 0:
             s["active_s"] += d
     out = sorted(by.values(), key=lambda s: s["first_ts"])
+    cites = []
     for s in out:
         s["active_s"] = round(s["active_s"], 1)
-    return {"data": {"day": day, "sessions": out},
-            "summary": f"{len(out)} sessions on {day}", "cites": []}
+        s["first_ts"], s["last_ts"] = _local_ts(s["first_ts"]), _local_ts(s["last_ts"])   # local time + offset
+        cites.append({"turn_id": s["first_turn_id"], "session_id": s["id"],
+                      "label": clip(f"turn {s['first_turn_id']} · {s['repo'] or s['agent'] or ''} · first prompt "
+                                    f"{(s['first_ts'] or '')[11:16]}", 80), "_slot": s})
+    return {"data": {"day": day, "timezone": "local (timestamps carry their UTC offset)", "sessions": out},
+            "summary": f"{len(out)} sessions on {day}", "cites": cites}
 
 
 # --- dispatch + citations ----------------------------------------------------------------------------
@@ -673,6 +733,8 @@ def _loop(client, src: _Src, api_messages: list[dict], day: str | None, *, effor
     seen: dict[str, list[int]] = {}
     msgs = list(api_messages)
     step = 0
+    text_out = False          # any text yielded yet in this answer
+    sep = ""
     while step < max_steps:
         last = step == max_steps - 1
         params: dict[str, Any] = dict(
@@ -683,17 +745,29 @@ def _loop(client, src: _Src, api_messages: list[dict], day: str | None, *, effor
         if last:
             params["tool_choice"] = {"type": "none"}
         emitted = False
+        held: list[str] = []      # this step's text, held back until it is clearly not a pre-tool preamble
+        held_len = 0
         try:
             with client.messages.stream(**params) as stream:
                 for ev in stream:
                     if getattr(ev, "type", None) == "text" and getattr(ev, "text", ""):
-                        emitted = True
-                        yield {"type": "text-delta", "delta": ev.text}
+                        if emitted:
+                            yield {"type": "text-delta", "delta": ev.text}
+                            continue
+                        held.append(ev.text)
+                        held_len += len(ev.text)
+                        if held_len >= PREAMBLE_HOLD:     # long text: an answer, stream it live
+                            emitted = True
+                            yield {"type": "text-delta", "delta": sep + "".join(held)}
+                            text_out = True
+                            held = []
                 final = stream.get_final_message()
         except Exception as e:
             if not emitted and model_i + 1 < len(models) and _fallbackable(e):
                 model_i += 1
                 continue          # retry the same step on the fallback model
+            if held:
+                yield {"type": "text-delta", "delta": sep + "".join(held)}
             yield {"type": "error", "message": _err_text(e)}
             yield {"type": "done", "model": model_used}
             return
@@ -701,6 +775,11 @@ def _loop(client, src: _Src, api_messages: list[dict], day: str | None, *, effor
         content = list(getattr(final, "content", None) or [])
         stop = getattr(final, "stop_reason", None)
         tool_uses = [b for b in content if getattr(b, "type", None) == "tool_use"]
+        if held and not (tool_uses and stop == "tool_use"):
+            # short text of a step that did not end in a tool call: that is (part of) the answer
+            yield {"type": "text-delta", "delta": sep + "".join(held)}
+            text_out = True
+        sep = "\n\n" if text_out else ""     # paragraph break before the next step's text
         if stop == "refusal":
             yield {"type": "error", "message": "the model declined to answer this request"}
             break
@@ -765,9 +844,112 @@ def stream_chat(conn, messages: list[dict], day: str | None = None, *, client=No
             yield {"type": "error", "message": "empty question"}
             yield {"type": "done", "model": None}
             return
-        yield from _loop(cl, src, api_messages, day)
+        text: list[str] = []
+        tools: list[dict] = []
+        failed = False
+        for ev in _loop(cl, src, api_messages, day):
+            t = ev["type"]
+            if t == "text-delta":
+                text.append(ev["delta"])
+            elif t == "tool-start":
+                tools.append({"name": ev["name"], "input": ev["input"]})
+            elif t == "tool-result" and tools:
+                tools[-1].update(summary=ev["summary"], citations=ev["citations"])
+            elif t == "error":
+                failed = True
+            elif t == "done":
+                answer = "".join(text).strip()
+                if answer and not failed:
+                    items = suggest_followups(cl, api_messages[-1]["content"], answer, tools)
+                    if items:
+                        yield {"type": "suggestions", "items": items}
+            yield ev
 
     return gen()
+
+
+# --- quick-response tiles ------------------------------------------------------------------------
+
+SUGGEST_TOOL = "suggest_followups"
+_SUGGEST_SCHEMA = {
+    "type": "object",
+    "properties": {"items": {"type": "array", "description": "2 to 4 follow-ups.", "items": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "description": "Tile text, at most 40 characters."},
+            "prompt": {"type": "string", "description": "The full question sent when the tile is clicked, "
+                                                        "at most 200 characters."},
+        },
+        "required": ["label", "prompt"], "additionalProperties": False}}},
+    "required": ["items"], "additionalProperties": False,
+}
+SUGGEST_SYSTEM = """<role>
+You write quick-response tiles for a chat where one human asks an analyst about their own coding-agent usage (scorer metrics: verification V, corrections C, hand-edits H, blocked minutes B, cost, tokens, sessions, turns).
+</role>
+
+<task>
+Given the user's latest question, the analyst's answer and the tools it used, call suggest_followups with 2 to 4 follow-up questions the user is most likely to ask next.
+</task>
+
+<rules>
+1. Build on THIS answer: name the concrete things it surfaced — a turn id, a repo, a metric, a day, a count ("Why did turn 1423 fail?", "Show the 4 unverified sessions", "Compare with last week"). Never generic ("Tell me more", "Any other insights?").
+2. Each must be answerable by the analyst with its tools (metrics, turns, sessions, SQL over the scorer DB). No actions outside the data (no "fix my code", no "open the file").
+3. label: at most 40 characters, imperative or question, no trailing period. prompt: at most 200 characters, a complete, self-contained question in the user's voice that names the day / turn ids / repo it refers to.
+4. All distinct from each other and from the question already asked.
+5. Never copy prompt or command excerpts from the answer into a tile; refer to turns by id.
+6. Write in the language of the user's question.
+</rules>"""
+
+
+def _suggest_input(question: str, answer: str, tools: list[dict]) -> str:
+    q = re.sub(r"<dashboard_context>.*?</dashboard_context>", "", question or "", flags=re.S).strip()
+    ctx = re.search(r"<dashboard_context>(.*?)</dashboard_context>", question or "", flags=re.S)
+    lines = []
+    for t in tools[:12]:
+        cites = ", ".join(f"[{c.get('n')}] turn {c.get('turn_id')}" for c in (t.get("citations") or [])[:6])
+        lines.append(clip(f"{t['name']}({json.dumps(t.get('input'), default=str, ensure_ascii=False)}) -> "
+                          f"{t.get('summary', '')}" + (f" · {cites}" if cites else ""), 240))
+    return (f"<question>{clip(q, 300)}</question>\n"
+            + (f"<dashboard>{clip(ctx.group(1), 120)}</dashboard>\n" if ctx else "")
+            + "<tools_used>\n" + ("\n".join(lines) or "(none)") + "\n</tools_used>\n"
+            + f"<answer>\n{answer[:2000]}\n</answer>")
+
+
+def sanitize_suggestions(raw: Any) -> list[dict]:
+    """Trim, single-line, label ≤ 40 / prompt ≤ 200, dedupe by label, cap 4; fewer than 2 -> []."""
+    out, seen = [], set()
+    for it in raw if isinstance(raw, list) else []:
+        if not isinstance(it, dict):
+            continue
+        label = clip(str(it.get("label") or "").rstrip(" ."), 40)
+        prompt = clip(str(it.get("prompt") or ""), 200)
+        if not label or not prompt or label.lower() in seen:
+            continue
+        seen.add(label.lower())
+        out.append({"label": label, "prompt": prompt})
+        if len(out) == 4:
+            break
+    return out if len(out) >= 2 else []
+
+
+def suggest_followups(client, question: str, answer: str, tools: list[dict]) -> list[dict]:
+    """One bounded Haiku call (forced strict tool, 6 s, no retries). Never raises; [] on any failure."""
+    try:
+        c = client.with_options(timeout=SUGGEST_TIMEOUT_S, max_retries=0) if hasattr(client, "with_options") else client
+        resp = c.messages.create(
+            model=SUGGEST_MODEL, max_tokens=800, system=SUGGEST_SYSTEM,
+            tools=[{"name": SUGGEST_TOOL, "description": "Record the follow-up tiles.", "strict": True,
+                    "input_schema": _SUGGEST_SCHEMA}],
+            tool_choice={"type": "tool", "name": SUGGEST_TOOL},   # Haiku 5.5: forced call, no thinking
+            messages=[{"role": "user", "content": _suggest_input(question, answer, tools)}],
+        )
+        for b in getattr(resp, "content", None) or []:
+            if getattr(b, "type", None) == "tool_use" and getattr(b, "name", None) == SUGGEST_TOOL:
+                inp = b.input if isinstance(b.input, dict) else json.loads(b.input)
+                return sanitize_suggestions(inp.get("items"))
+    except Exception:
+        pass
+    return []
 
 
 # --- narrative -------------------------------------------------------------------------------------

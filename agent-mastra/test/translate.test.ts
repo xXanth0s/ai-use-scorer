@@ -27,9 +27,10 @@ describe('(d) Mastra chunk -> Python event shape', () => {
     ];
     const evs = chunks.flatMap((c) => tr.translate(c));
     expect(evs).toEqual([
-      { type: 'text-delta', delta: 'Hi ' },
-      { type: 'tool-start', id: 'c1', name: 'get_turn', input: { turn_id: 7 } },
-      { type: 'tool-result', id: 'c1', name: 'get_turn', ok: true, summary: `${'x'.repeat(79)}…`, citations: [cite] },
+      // 'Hi ' was written before a tool call in the same step: held back and dropped
+      { type: 'tool-start', id: 'c1', name: 'get_turn', input: { turn_id: 7 }, agent: 'analyst' },
+      { type: 'tool-result', id: 'c1', name: 'get_turn', ok: true, summary: `${'x'.repeat(79)}…`, citations: [cite],
+        agent: 'analyst' },
       { type: 'subagent-start', id: 'd1', name: 'sqlAnalyst', task: `${'q'.repeat(79)}…` },
       { type: 'subagent-result', id: 'd1', name: 'sqlAnalyst', summary: '42 rows [4]' },
       { type: 'error', message: 'Error: boom' },
@@ -39,6 +40,38 @@ describe('(d) Mastra chunk -> Python event shape', () => {
     expect([...tr.models]).toEqual(['sub-m', 'claude-opus-5-5']);
     expect([tr.steps, tr.subagentSteps]).toEqual([1, 1]);
     expect(new StreamTranslator('fallback-model').done().model).toBe('fallback-model');
+  });
+
+  it('holds pre-tool text, releases answer text, separates steps with a paragraph break', () => {
+    const tr = new StreamTranslator();
+    const td = (text: string) => ({ type: 'text-delta', payload: { text } });
+    const out = [
+      td('Let me check.'), { type: 'tool-call', payload: { toolCallId: 'a', toolName: 'get_metric', args: {} } },
+      { type: 'step-finish', payload: { stepResult: { reason: 'tool-calls' } } },
+      td('Long reasoning before another tool. '.repeat(6)), // > PREAMBLE_HOLD: streams live
+      td('more'), { type: 'tool-call', payload: { toolCallId: 'b', toolName: 'get_turn', args: {} } },
+      { type: 'step-finish', payload: { stepResult: { reason: 'tool-calls' } } },
+      td('V is 50% '), td('[1].'), { type: 'step-finish', payload: { stepResult: { reason: 'stop' } } },
+      { type: 'finish', payload: { stepResult: { reason: 'stop' } } },
+    ].flatMap((c) => tr.translate(c));
+    const text = out.filter((e) => e.type === 'text-delta').map((e: any) => e.delta);
+    expect(text).toEqual(['Long reasoning before another tool. '.repeat(6), 'more', '\n\nV is 50% [1].']);
+    expect(text.join('')).not.toContain('Let me check.');
+    // stream ended without step-finish (abort): flush keeps the partial answer
+    const tr2 = new StreamTranslator();
+    expect(tr2.translate(td('partial'))).toEqual([]);
+    expect(tr2.flush()).toEqual([{ type: 'text-delta', delta: 'partial' }]);
+  });
+
+  it('tags a sub-agent tool call with the delegation it belongs to', () => {
+    const tr = new StreamTranslator();
+    tr.translate({ type: 'tool-call', payload: { toolCallId: 'd1', toolName: 'agent-turnInvestigator', args: { prompt: 'p' } } });
+    const step = (status: string) => ({ type: 'data-thinking-step',
+      data: { step: 'get_turn', status, id: 'x', agent: 'turnInvestigator', input: {}, ok: true, summary: 's', citations: [] } });
+    expect(tr.translate(step('in-progress'))[0]).toMatchObject({ type: 'tool-start', agent: 'turnInvestigator', subagent_id: 'd1' });
+    expect(tr.translate(step('done'))[0]).toMatchObject({ type: 'tool-result', agent: 'turnInvestigator', subagent_id: 'd1' });
+    tr.translate({ type: 'tool-result', payload: { toolCallId: 'd1', toolName: 'agent-turnInvestigator', result: { text: 'ok' } } });
+    expect(tr.translate(step('done'))[0]).not.toHaveProperty('subagent_id');
   });
 
   it('reports the step cap like agent.py when the run ends on a tool-calls step', () => {

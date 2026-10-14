@@ -13,8 +13,8 @@ import { emitThinkingStep } from './lib/thinking-step';
 const SPECS = {
   query_db: {
     description:
-      'Run one read-only SQL SELECT (or WITH … SELECT) against the scorer SQLite DB. Free-text columns come back ' +
-      'clipped to 80 chars. Returns {columns, rows, truncated}. Filter metric_value by run_id = (SELECT max(id) FROM ingest_run).',
+      'Run one read-only SQL SELECT (or WITH … SELECT) against the scorer SQLite DB. Free-text and path columns come ' +
+      'back as ≤ 80-char excerpts. Returns {columns, rows, truncated}. Filter metric_value by run_id = (SELECT max(id) FROM ingest_run).',
     inputSchema: z.object({
       sql: z.string().describe('A single SELECT/WITH statement.'),
       limit: z.number().int().optional().describe('Max rows (1-200, default 50).'),
@@ -37,7 +37,9 @@ const SPECS = {
     }),
   },
   list_sessions: {
-    description: 'Sessions active on a local day: id, agent, repo, turns, first/last prompt, active seconds.',
+    description:
+      'Sessions active on a local day: id, agent, repo, turns, first/last prompt (local time), active seconds; ' +
+      "each session's first turn carries a citation number n.",
     inputSchema: z.object({ day: z.string().optional().describe('Local YYYY-MM-DD; default = the day on screen.') }),
   },
 } as const;

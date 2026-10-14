@@ -154,9 +154,58 @@ def test_query_db_clips_private_columns(conn):
     assert r["data"]["rows"][0][0].startswith("SECRET-") and len(r["data"]["rows"][0][0]) == 80
 
 
+LONG_PATH = "/Users/someone/" + "deep/" * 30 + "src/scorer/metrics.py"
+
+
+@pytest.fixture
+def conn_extra(dbpath):
+    """Long paths / notes / git rows in the columns QA found unclipped."""
+    c = sqlite3.connect(dbpath)
+    c.execute("UPDATE session SET cwd = ?, repo = ?, branch = ? WHERE id = 's1'",
+              (LONG_PATH, LONG_PATH, "feature/" + "b" * 120))
+    c.execute("UPDATE metric_evidence SET note = ?", ("unverified: " + LONG_PATH,))
+    c.execute("INSERT INTO git_change(repo, sha, at, files, author) VALUES (?,?,?,?,?)",
+              (LONG_PATH, "abc", ts(1), ",".join([LONG_PATH] * 3), "A. Person <" + "a" * 100 + "@x.org>"))
+    c.commit()
+    yield c
+    c.close()
+
+
+def test_query_db_clips_paths_notes_git(conn_extra):
+    for sql in ("SELECT cwd, repo, branch, transcript_path FROM session", "SELECT note FROM metric_evidence",
+                "SELECT files, author, repo FROM git_change", "SELECT * FROM session", "SELECT * FROM git_change",
+                "SELECT group_concat(prompt_text, ' ') AS g FROM turn",
+                "SELECT cwd || '/' || cwd AS p FROM session", "SELECT json_group_array(note) AS j FROM metric_evidence"):
+        r = agent.run_tool(conn_extra, "query_db", {"sql": sql})
+        assert r["ok"], (sql, r)
+        for s in walk_strings(r["data"]["rows"]):
+            assert len(s) <= 80, (sql, s)
+    r = agent.run_tool(conn_extra, "query_db", {"sql": "SELECT cwd FROM session WHERE id = 's1'"})
+    assert r["data"]["rows"][0][0] == "…" + LONG_PATH[-79:] and r["data"]["rows"][0][0].endswith("/src/scorer/metrics.py")
+    # a result that never read a sensitive column keeps the 200-char cap
+    r = agent.run_tool(conn_extra, "query_db", {"sql": "SELECT group_concat(id || '-' || id || '-' || id, ',') AS g FROM "
+                                                     "(WITH RECURSIVE c(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM c "
+                                                     "WHERE id < 40) SELECT id FROM c)"})
+    assert r["ok"] and 80 < len(r["data"]["rows"][0][0]) <= 200
+
+
+def test_tools_clip_paths_notes(conn_extra):
+    t0, _ = turn_ids(conn_extra)
+    for name, inp in (("get_turn", {"turn_id": t0}), ("get_metric", {"metric": "V", "day": DAY}),
+                      ("list_sessions", {"day": DAY})):
+        r = agent.run_tool(conn_extra, name, inp)
+        assert r["ok"], (name, r)
+        for s in walk_strings(r):
+            assert len(s) <= 80, (name, s)
+    d = agent.run_tool(conn_extra, "get_turn", {"turn_id": t0})["data"]
+    assert d["file_edits_total"] == 1 and len(d["file_edits"]) == 1
+
+
 def test_query_db_raw_main_table_denied(conn):
     for sql in ("SELECT prompt_text FROM main.turn", "SELECT substr(prompt_text, 81, 80) FROM main.turn",
-                "SELECT args_summary FROM main.tool_call"):
+                "SELECT args_summary FROM main.tool_call", "SELECT cwd FROM main.session",
+                "SELECT repo, branch FROM main.session", "SELECT note FROM main.metric_evidence",
+                "SELECT files FROM main.git_change", "SELECT author FROM main.git_change"):
         r = agent.run_tool(conn, "query_db", {"sql": sql})
         assert r["ok"] is False and ("not authorized" in r["error"] or "prohibited" in r["error"]), (sql, r)
     # non-sensitive columns of main tables remain readable
@@ -235,12 +284,21 @@ def test_get_metric_prefix_missing_and_partial(conn):
 
 
 def test_list_sessions(conn):
-    r = agent.run_tool(conn, "list_sessions", {"day": DAY})
+    t0, _ = turn_ids(conn)
+    r = agent.run_tool(conn, "list_sessions", {"day": DAY}, n0=5)
     assert r["ok"]
     ss = {s["id"]: s for s in r["data"]["sessions"]}
     assert set(ss) == {"s1", "s2"}
     assert ss["s1"]["turns"] == 2 and ss["s1"]["active_s"] == 360.0 and ss["s1"]["repo"] == "proj"
     assert ss["s2"]["agent"] == "codex"
+    # local time with offset, same instant as the stored UTC value
+    from scorer.model import local_tz, parse_ts
+    first = ss["s1"]["first_ts"]
+    assert parse_ts(first) == BASE and first == BASE.astimezone(local_tz()).isoformat(timespec="seconds")
+    # the first turn of each session is cited
+    assert ss["s1"]["first_turn_id"] == t0 and ss["s1"]["n"] == 5
+    assert [(c["n"], c["turn_id"]) for c in r["citations"]] == [(5, t0), (6, ss["s2"]["first_turn_id"])]
+    assert all(len(c["label"]) <= 80 for c in r["citations"])
     assert agent.run_tool(conn, "list_sessions", {"day": "2001-01-01"})["data"]["sessions"] == []
 
 
@@ -331,14 +389,16 @@ def test_loop_tool_use_then_end_turn(conn):
     ])
     evs = list(agent.stream_chat(conn, [{"role": "user", "content": "why is V low?"}], DAY, client=fc))
     kinds = [e["type"] for e in evs]
-    assert kinds == ["text-delta", "tool-start", "tool-result", "tool-start", "tool-result", "tool-start",
-                     "tool-result", "text-delta", "text-delta", "done"]
+    # the short pre-tool "Let me check." is dropped; the final step's short text arrives in one piece
+    assert kinds == ["tool-start", "tool-result", "tool-start", "tool-result", "tool-start",
+                     "tool-result", "text-delta", "done"]
+    assert evs[-2]["delta"] == "V is 50% [1] — see [3]."
     assert evs[-1] == {"type": "done", "model": "claude-opus-5-5"}
-    r1 = evs[2]
+    r1 = evs[1]
     assert r1["ok"] and [c["n"] for c in r1["citations"]] == [1, 2]
-    r2 = evs[4]
+    r2 = evs[3]
     assert [c["n"] for c in r2["citations"]] == [3] and r2["citations"][0]["turn_id"] == t0
-    dup = evs[6]
+    dup = evs[5]
     assert dup["ok"] is False and dup["summary"] == "duplicate call skipped"
     # request shape: cached system, tools, both tool results in one user message, day context
     req = fc.requests[0]
@@ -351,6 +411,18 @@ def test_loop_tool_use_then_end_turn(conn):
     assert third[-1]["content"][1]["is_error"] is True
     for m in third:
         assert SECRET not in str(m)
+
+
+def test_loop_long_pre_tool_text_is_separated_from_the_answer(conn):
+    pre = "Looking at the verification metric first, then the turns behind it. " * 3   # > PREAMBLE_HOLD
+    fc = FakeClient([
+        ([pre[:100], pre[100:]], [text(pre), tool_use("a", "get_metric", {"metric": "V", "day": DAY})], "tool_use"),
+        (["Your V is 50% [1]."], [text("Your V is 50% [1].")], "end_turn"),
+    ])
+    evs = list(agent.stream_chat(conn, [{"role": "user", "content": "V?"}], DAY, client=fc))
+    out = "".join(e["delta"] for e in evs if e["type"] == "text-delta")
+    assert out == pre + "\n\nYour V is 50% [1]."
+    assert [e["type"] for e in evs][0] == "text-delta"      # long text streams before the step ends
 
 
 def test_loop_fallback_model(conn):
@@ -422,3 +494,68 @@ def test_live_smoke(conn):
     assert not errors and evs[-1]["type"] == "done" and text_out
     assert tools
     assert SECRET not in text_out
+
+
+# --- quick-response tiles ----------------------------------------------------------------------------
+
+class SuggestClient(FakeClient):
+    """FakeClient plus messages.create for the follow-up call: returns `items` as a forced tool call."""
+
+    def __init__(self, script, items=None, exc=None):
+        super().__init__(script)
+        self.items, self.exc, self.creates = items, exc, []
+
+    def with_options(self, **kw):
+        self.options = kw
+        return self
+
+    def create(self, **kw):
+        self.creates.append(kw)
+        if self.exc:
+            raise self.exc
+        return SimpleNamespace(content=[SimpleNamespace(type="tool_use", name=kw["tool_choice"]["name"],
+                                                        input={"items": self.items})], stop_reason="tool_use")
+
+
+def _answer_script(t0):
+    return [([], [tool_use("a", "get_turn", {"turn_id": t0})], "tool_use"),
+            (["Turn failed its test [1]."], [text("Turn failed its test [1].")], "end_turn")]
+
+
+def test_suggestions_event_before_done(conn):
+    t0, _ = turn_ids(conn)
+    items = [{"label": f"Why did turn {t0} fail?", "prompt": f"Why did the test in turn {t0} fail?"},
+             {"label": "Compare with last week.", "prompt": "Compare my V with last week."},
+             {"label": "x" * 60, "prompt": "y" * 300},
+             {"label": f"why did turn {t0} fail?", "prompt": "duplicate label"},
+             {"label": "", "prompt": "no label"},
+             {"label": "Fifth", "prompt": "p"}, {"label": "Sixth", "prompt": "p"}]
+    fc = SuggestClient(_answer_script(t0), items)
+    evs = list(agent.stream_chat(conn, [{"role": "user", "content": "why did it fail?"}], DAY, client=fc))
+    assert [e["type"] for e in evs][-2:] == ["suggestions", "done"]
+    got = evs[-2]["items"]
+    assert 2 <= len(got) <= 4 and [g["label"] for g in got][:2] == [f"Why did turn {t0} fail?", "Compare with last week"]
+    assert all(len(g["label"]) <= 40 and len(g["prompt"]) <= 200 for g in got)
+    req = fc.creates[0]
+    assert req["model"] == "claude-haiku-5-5" and req["tools"][0]["strict"] is True
+    assert req["tool_choice"] == {"type": "tool", "name": "suggest_followups"} and fc.options["timeout"] == 6.0
+    user = req["messages"][0]["content"]
+    assert "Turn failed its test [1]." in user and f"turn {t0}" in user and "get_turn" in user
+    assert SECRET[:85] not in user and "<dashboard_context>" not in user
+
+
+def test_suggestions_skipped_on_failure_or_too_few(conn):
+    t0, _ = turn_ids(conn)
+    for client in (SuggestClient(_answer_script(t0), exc=TimeoutError("slow")),
+                   SuggestClient(_answer_script(t0), [{"label": "Only one", "prompt": "p"}]),
+                   FakeClient(_answer_script(t0))):
+        evs = list(agent.stream_chat(conn, [{"role": "user", "content": "q"}], DAY, client=client))
+        assert "suggestions" not in [e["type"] for e in evs] and evs[-1]["type"] == "done"
+    # no answer text (error) -> no call at all
+    import anthropic
+    import httpx2
+    err = anthropic.BadRequestError("bad", response=httpx2.Response(400, request=httpx2.Request(
+        "POST", "https://api.anthropic.com/v1/messages")), body=None)
+    fc = SuggestClient([err], [{"label": "a", "prompt": "a"}, {"label": "b", "prompt": "b"}])
+    evs = list(agent.stream_chat(conn, [{"role": "user", "content": "q"}], DAY, client=fc))
+    assert fc.creates == [] and [e["type"] for e in evs] == ["error", "done"]

@@ -9,6 +9,9 @@ import { createScorerMastra, type ScorerMastra } from '../src/mastra';
 import { makeServer } from '../src/server';
 import { DAY, freePort, lastUserText, sse, startScorer, toolResultsText, type ScorerProc } from './helpers';
 import { scriptedModel, type ScriptCall, type ScriptPart } from './mock-model';
+import { MockLanguageModelV3 } from 'ai/test';
+
+import { buildSuggester, suggestFollowups } from '../src/suggest';
 
 /**
  * Real chain, mock LLMs: `scorer serve` (fixture DB, Python tools) <-> this sidecar (Mastra agents
@@ -40,6 +43,10 @@ const analystModel = scriptedModel('mock-analyst', (c: ScriptCall): ScriptPart[]
     if (c.step === 0) return [{ tool: 'agent-turnInvestigator', input: { prompt: 'BUDGET: investigate six turns' } }];
     return [{ text: 'done' }];
   }
+  if (q.includes('SUGGEST')) {
+    if (c.step === 0) return [{ tool: 'get_metric', input: { metric: 'V', day: DAY } }];
+    return [{ text: 'V is 0.5; one turn was unverified [1].' }];
+  }
   if (q.includes('LOOP')) {
     if (c.step < 2) return [{ tool: 'get_metric', input: { metric: 'B_min', day: DAY } }];
     if (c.step === 2) return c.tools.includes('get_metric') ? [{ tool: 'get_metric', input: { metric: 'B_min', day: DAY } }]
@@ -64,11 +71,23 @@ const investigatorModel = scriptedModel('mock-haiku', (c) => {
 
 const sqlModel = scriptedModel('mock-sql', () => [{ text: 'n/a' }]);
 
+/** Tiles only for the SUGGEST scenario (other scenarios: no tool call -> no tiles, exact event lists). */
+const suggesterModel = scriptedModel('mock-suggest', (c) => {
+  const u = lastUserText(c.prompt);
+  if (u.includes('SLOW')) return [{ text: 'never calls the tool' }];
+  if (!u.includes('SUGGEST')) return [{ text: 'no tiles' }];
+  return [{ tool: 'suggest_followups', input: { items: [
+    { label: `Why was turn ${ids['1']} unverified?`, prompt: `Why was the edit batch in turn ${ids['1']} not verified on ${DAY}?` },
+    { label: 'Compare with last week.', prompt: 'Compare my V with the previous 7 days.' },
+    { label: 'x'.repeat(70), prompt: 'y'.repeat(400) },
+  ] } }];
+});
+
 beforeAll(async () => {
   scorer = await startScorer();
   ids = scorer.turnIds;
   app = createScorerMastra({
-    models: { analyst: analystModel, turnInvestigator: investigatorModel, sqlAnalyst: sqlModel },
+    models: { analyst: analystModel, turnInvestigator: investigatorModel, sqlAnalyst: sqlModel, suggester: suggesterModel },
     traceDir: join(scorer.dir, 'traces'),
     onGuardTrip: (t) => trips.push(t),
   });
@@ -118,7 +137,51 @@ describe('(a) tool call -> HTTP wrapper -> real scorer serve', () => {
     expect(sys).toContain('<grounding>');
     expect(sys).toContain('Verification after changes');
     expect(sys).toContain('<delegation>');
+    // finding 11: quantitative cross-cutting questions go to the SQL analyst
+    expect(sys).toContain('When to delegate to agent-sqlAnalyst');
+    expect(sys).toMatch(/shares, rates or percentages/);
+    expect(sys).toMatch(/per model, per repo/);
+    expect(sys).toMatch(/counts, totals, averages or trends over a range of days/);
     expect(lastUserText(analystModel.seen.at(-1)!.prompt)).toContain(`<dashboard_context>day on screen: ${DAY}`);
+  });
+});
+
+describe('quick-response tiles', () => {
+  it('sends a suggestions event right before done, built from the answer and its tools', async () => {
+    const evs = await chatDirect('SUGGEST: why is V low?');
+    expect(evs.map((e) => e.type)).toEqual(['tool-start', 'tool-result', 'text-delta', 'suggestions', 'done']);
+    const items = evs[3].items;
+    expect(items.map((i: any) => i.label).slice(0, 2)).toEqual([`Why was turn ${ids['1']} unverified?`, 'Compare with last week']);
+    expect(items.length).toBeGreaterThanOrEqual(2);
+    expect(items.length).toBeLessThanOrEqual(4);
+    for (const i of items) {
+      expect(i.label.length).toBeLessThanOrEqual(40);
+      expect(i.prompt.length).toBeLessThanOrEqual(200);
+    }
+    // the suggester saw the question (without dashboard context), the answer and the tool summary + citations
+    const call = suggesterModel.seen.at(-1)!;
+    const u = lastUserText(call.prompt);
+    expect(u).toContain('SUGGEST: why is V low?');
+    expect(u).toContain('one turn was unverified [1]');
+    expect(u).toMatch(/get_metric\(.*\) -> V 2026-10-13/);
+    expect(u).toContain(`[1] turn ${ids['1']}`);
+    expect(u).not.toContain('<dashboard_context>');
+    expect(call.tools).toEqual(['suggest_followups']);
+    // the tiles agent is not a delegation target of the analyst
+    expect(analystModel.seen.at(-1)!.tools).not.toContain('agent-suggester');
+  });
+
+  it('no tiles when the model does not call the tool or misses the deadline', async () => {
+    const agent = app.mastra.getAgent('suggester');
+    expect(await suggestFollowups(agent, 'SLOW', 'answer', [])).toEqual([]);
+    // a model that never answers: the 6 s bound (here 200 ms) ends the call with no tiles
+    const hanging = new MockLanguageModelV3({ provider: 'mock', modelId: 'hang',
+      doGenerate: () => new Promise<never>(() => undefined) });
+    const t0 = Date.now();
+    expect(await suggestFollowups(buildSuggester(hanging), 'SUGGEST', 'answer', [], { timeoutMs: 200 })).toEqual([]);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    const evs = await chatDirect('TOOLS: again?');
+    expect(evs.map((e) => e.type)).not.toContain('suggestions');
   });
 });
 

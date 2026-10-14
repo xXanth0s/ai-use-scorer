@@ -6,6 +6,7 @@ import { config } from './config';
 import { makeHistoryLimiter } from './harness/history-limiter';
 import { makeReadLoopGuardProcessor, type GuardTrip } from './harness/read-loop-guard';
 import { getRun } from './lib/run-state';
+import { buildSuggester } from './suggest';
 import { scorerTools } from './tools';
 
 const cached = { anthropic: { cacheControl: { type: 'ephemeral' as const } } };
@@ -14,9 +15,15 @@ const cached = { anthropic: { cacheControl: { type: 'ephemeral' as const } } };
  *  of the analyst's instructions that is Mastra-specific. */
 export const DELEGATION_SECTION = `<delegation>
 Two specialists can work for you; each returns a short brief whose [n] citation numbers are valid in your answer too (numbering is shared across this whole answer).
+- agent-sqlAnalyst: give it one quantitative question; it answers with SQL over the scorer DB and cites turns.
 - agent-turnInvestigator: give it a set of turn ids (e.g. the worst evidence turns from get_metric) and the question; it reads each turn and reports what went wrong per turn, with citations. Use it when 2+ turns need a close look.
-- agent-sqlAnalyst: give it one quantitative question ("share of edit batches with no test per repo this month"); it answers with SQL over the scorer DB.
-Delegate when it saves you several tool calls; do simple lookups yourself. Pass the turn ids / day / metric ids the specialist needs in the prompt — it does not see your conversation's tool results.
+When to delegate to agent-sqlAnalyst — do it whenever the question is quantitative and cross-cutting, even if the user did not ask for SQL:
+- shares, rates or percentages across many turns/sessions ("what share of my edit batches went untested?"),
+- breakdowns per model, per repo, per agent or per day ("which repo costs most?", "Opus vs Sonnet tokens"),
+- counts, totals, averages or trends over a range of days ("how many interrupts this week?", "since Monday").
+For these, delegate first instead of running several query_db / get_metric calls yourself. A single metric value for one day (get_metric) or one turn (get_turn) is a simple lookup: do it yourself.
+"Why" questions about what happened in particular turns ("investigate the worst turns", "why were these unverified?") are not quantitative: get the evidence turns with get_metric, then give their ids to agent-turnInvestigator. A question can need both: numbers from agent-sqlAnalyst, causes from agent-turnInvestigator.
+Pass the turn ids / day range / metric ids / repo names the specialist needs in the prompt — it does not see your conversation's tool results.
 </delegation>`;
 
 export const TURN_INVESTIGATOR_PROMPT = `<identity>
@@ -53,8 +60,8 @@ Answer one quantitative question with SQL and report the numbers.
 </job>
 
 <tools>
-- query_db(sql, limit): single SELECT/WITH, ≤ 200 rows. Free-text columns are clipped to 80 chars on purpose. Include a turn_id column when rows are turns: each distinct turn_id gets a citation number (data.citations maps turn_id -> n).
-Key tables: session(id, agent, repo), turn(id, session_id, idx, prompt_at, agent_finished_at, end_source), tool_call(id, turn_id, name, kind, bash_intent, initiator, is_error, has_result), file_edit, metric_value(run_id, metric, scope_type, scope_id, value, unit, n), metric_evidence(metric_value_id, turn_id, note), ingest_run(id). Always filter metric_value by run_id = (SELECT max(id) FROM ingest_run). Times are ISO-8601 UTC; for day questions prefer metric_value rows with scope_type='day' (scope_id = local YYYY-MM-DD).
+- query_db(sql, limit): single SELECT/WITH, ≤ 200 rows. The DB stores full text, but free-text and path columns come back as ≤ 80-char excerpts on purpose (privacy); do not report the data itself as truncated. Include a turn_id column when rows are turns: each distinct turn_id gets a citation number (data.citations maps turn_id -> n).
+Key tables: session(id, agent, repo), turn(id, session_id, idx, prompt_at, agent_finished_at, end_source), tool_call(id, turn_id, name, kind, bash_intent, initiator, is_error, has_result), file_edit, metric_value(run_id, metric, scope_type, scope_id, value, unit, n), metric_evidence(metric_value_id, turn_id, note), ingest_run(id). Always filter metric_value by run_id = (SELECT max(id) FROM ingest_run). Times in the DB are ISO-8601 UTC; for day questions prefer metric_value rows with scope_type='day' (scope_id = local YYYY-MM-DD).
 </tools>
 
 <grounding>
@@ -74,6 +81,8 @@ export type ScorerModels = {
   fallback?: MastraModelConfig;
   turnInvestigator: MastraModelConfig;
   sqlAnalyst: MastraModelConfig;
+  /** Post-answer quick-response tiles (suggest.ts). */
+  suggester: MastraModelConfig;
 };
 
 export function anthropicModels(): ScorerModels {
@@ -83,6 +92,7 @@ export function anthropicModels(): ScorerModels {
     fallback: config.analystModel === config.fallbackModel ? undefined : anthropic(config.fallbackModel),
     turnInvestigator: anthropic(config.investigatorModel),
     sqlAnalyst: anthropic(config.sqlModel),
+    suggester: anthropic(config.suggestModel),
   };
 }
 
@@ -140,5 +150,6 @@ export function buildAgents(models: ScorerModels, opts: { onGuardTrip?: (t: Guar
       providerOptions: effort,
     },
   });
-  return { analyst, turnInvestigator, sqlAnalyst };
+  const suggester = buildSuggester(models.suggester);
+  return { analyst, turnInvestigator, sqlAnalyst, suggester };
 }

@@ -7,8 +7,15 @@ export const config = {
   /** Where `scorer serve` runs; the proxy's X-Scorer-Url header overrides it per request. */
   scorerUrl: (process.env.SCORER_URL || 'http://127.0.0.1:8765').replace(/\/+$/, ''),
   scorerHome: process.env.SCORER_HOME || join(homedir(), '.scorer'),
-  analystModel: process.env.SCORER_ANALYST_MODEL || 'claude-opus-5-5',
-  fallbackModel: 'claude-sonnet-5-5',
+  /** The Mastra analyst runs on Sonnet 5.5 (user decision); Opus 5.5 takes over on errors. The
+   *  Python agent keeps config.toml analyst_model (Opus) independently. */
+  analystModel: process.env.SCORER_ANALYST_MODEL || 'claude-sonnet-5-5',
+  fallbackModel:
+    process.env.SCORER_FALLBACK_MODEL ||
+    ((process.env.SCORER_ANALYST_MODEL || 'claude-sonnet-5-5') === 'claude-opus-5-5' ? 'claude-sonnet-5-5' : 'claude-opus-5-5'),
+  /** Quick-response tiles: one bounded post-answer call (Sherpa turn-chips). */
+  suggestModel: process.env.SCORER_SUGGEST_MODEL || 'claude-haiku-5-5',
+  suggestTimeoutMs: Number(process.env.SCORER_SUGGEST_TIMEOUT_MS) || 6_000,
   investigatorModel: process.env.SCORER_INVESTIGATOR_MODEL || 'claude-haiku-5-5',
   sqlModel: process.env.SCORER_SQL_MODEL || 'claude-sonnet-5-5',
   analystMaxSteps: 8,

@@ -4,6 +4,7 @@ import { config } from './config';
 import { RUN_KEY, RunState } from './lib/run-state';
 import { fetchSystemPrompt } from './lib/scorer-client';
 import type { ScorerMastra } from './mastra';
+import { suggestFollowups, type ToolTrace } from './suggest';
 import { errorText, StreamTranslator, type ChatEvent } from './translate';
 
 export type ChatBody = { messages?: Array<{ role?: string; content?: unknown }>; day?: string | null };
@@ -40,14 +41,42 @@ export async function* runChat(
   const day = typeof body.day === 'string' && DAY_RE.test(body.day) ? body.day : null;
   const tr = new StreamTranslator(config.analystModel, config.analystMaxSteps);
   const run = new RunState(opts.scorerUrl, day);
+  const text: string[] = [];
+  const tools = new Map<string, ToolTrace>(); // analyst-level tool calls, for the follow-up tiles
+  let failed = false;
+  const seen = (ev: ChatEvent): ChatEvent => {
+    if (ev.type === 'text-delta') text.push(ev.delta);
+    else if (ev.type === 'error') failed = true;
+    else if (ev.type === 'tool-start' && !ev.subagent_id) tools.set(ev.id, { name: ev.name, input: ev.input });
+    else if (ev.type === 'tool-result' && tools.has(ev.id)) Object.assign(tools.get(ev.id)!, { summary: ev.summary, citations: ev.citations });
+    else if (ev.type === 'subagent-result') tools.set(ev.id, { name: `agent-${ev.name}`, input: {}, summary: ev.summary });
+    return ev;
+  };
   try {
-    yield* answer(scorer, body, run, tr, opts.abortSignal);
-  } catch (e) {
-    yield { type: 'error', message: errorText(e).slice(0, 80) };
+    try {
+      for await (const ev of answer(scorer, body, run, tr, opts.abortSignal)) yield seen(ev);
+    } catch (e) {
+      for (const ev of tr.flush()) yield seen(ev);
+      yield seen({ type: 'error', message: errorText(e).slice(0, 80) });
+    }
+    for (const ev of tr.flush()) yield seen(ev);
+    const answerText = text.join('').trim();
+    if (answerText && !failed && !opts.abortSignal?.aborted) {
+      const question = toMessages(body, run.day, '').at(-1)?.content ?? '';
+      const items = await suggestFollowups(scorer.mastra.getAgent('suggester'), question, answerText, [...tools.values()],
+                                           { abortSignal: opts.abortSignal });
+      if (items.length) yield { type: 'suggestions', items };
+    }
+    yield tr.done();
+  } finally {
+    // also on abort: the consumer stops iterating (generator return) or the stream throws
+    try {
+      opts.stats?.({ steps: tr.steps, subagentSteps: tr.subagentSteps, models: [...tr.models], toolCalls: run.toolCalls,
+                     citations: run.citations.length, ms: Date.now() - t0 });
+    } catch {
+      /* stats are best-effort */
+    }
   }
-  opts.stats?.({ steps: tr.steps, subagentSteps: tr.subagentSteps, models: [...tr.models], toolCalls: run.toolCalls,
-                 citations: run.citations.length, ms: Date.now() - t0 });
-  yield tr.done();
 }
 
 async function* answer(

@@ -22,7 +22,7 @@ beforeAll(async () => {
   writeFileSync(join(pub, 'css', 'app.css'), 'body{}');
   writeFileSync(join(dir, 'secret.txt'), 'SECRET');
   const m = scriptedModel('m', () => [{ text: 'x' }]);
-  srv = makeServer(createScorerMastra({ models: { analyst: m, turnInvestigator: m, sqlAnalyst: m }, traceDir: join(dir, 'traces') }),
+  srv = makeServer(createScorerMastra({ models: { analyst: m, turnInvestigator: m, sqlAnalyst: m, suggester: m }, traceDir: join(dir, 'traces') }),
     { publicDir: pub });
   const port = await freePort();
   await new Promise<void>((ok) => srv.listen(port, '127.0.0.1', ok));
@@ -30,6 +30,40 @@ beforeAll(async () => {
 });
 
 afterAll(() => new Promise<void>((ok) => srv.close(() => ok())));
+
+describe('CORS on /chat (loopback origins only)', () => {
+  it('answers the preflight for a localhost origin and refuses others', async () => {
+    const ok = await fetch(`${url}/chat`, { method: 'OPTIONS', headers: { Origin: 'http://localhost:8790',
+      'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' } });
+    expect(ok.status).toBe(204);
+    expect(ok.headers.get('access-control-allow-origin')).toBe('http://localhost:8790');
+    expect(ok.headers.get('access-control-allow-methods')).toContain('POST');
+    expect(ok.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('content-type');
+    const v6 = await fetch(`${url}/chat`, { method: 'OPTIONS', headers: { Origin: 'http://[::1]:4190' } });
+    expect(v6.status).toBe(204);
+    for (const origin of ['https://evil.example', 'http://localhost.evil.example', 'null']) {
+      const bad = await fetch(`${url}/chat`, { method: 'OPTIONS', headers: { Origin: origin } });
+      expect(bad.status).toBe(403);
+      expect(bad.headers.get('access-control-allow-origin')).toBeNull();
+      const post = await fetch(`${url}/chat`, { method: 'POST', headers: { Origin: origin }, body: '{}' });
+      expect(post.status).toBe(403);
+    }
+  });
+
+  it('POST from a loopback origin carries the allow-origin header', async () => {
+    const res = await fetch(`${url}/chat`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:8790' }, body: 'not json' });
+    expect(res.status).toBe(400);
+    expect(res.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:8790');
+  });
+});
+
+describe('health', () => {
+  it('reports the Mastra analyst model (Sonnet 5.5) and its Opus 5.5 fallback', async () => {
+    const h = await (await fetch(`${url}/health`)).json();
+    expect(h).toMatchObject({ ok: true, backend: 'mastra' });
+    if (!process.env.SCORER_ANALYST_MODEL) expect(h).toMatchObject({ model: 'claude-sonnet-5-5', fallback: 'claude-opus-5-5' });
+  });
+});
 
 describe('static files from public/', () => {
   it('serves / as index.html and /public/* with content types', async () => {

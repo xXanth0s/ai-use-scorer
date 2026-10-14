@@ -71,6 +71,22 @@ function scorerUrlFor(req: IncomingMessage): string {
   return config.scorerUrl;
 }
 
+/** Browser origins allowed to call /chat cross-origin: loopback only (any port). */
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+/** CORS for /chat. Returns false (and answers 403) when a browser origin is not loopback. */
+function cors(req: IncomingMessage, res: ServerResponse): boolean {
+  const origin = req.headers.origin;
+  if (origin === undefined) return true; // not a browser cross-origin request (curl, the Python proxy)
+  if (!LOCAL_ORIGIN.test(origin)) {
+    json(res, 403, { error: 'origin not allowed' });
+    return false;
+  }
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  return true;
+}
+
 export function makeServer(
   scorer: ScorerMastra,
   opts: { onStats?: (s: ChatStats) => void; publicDir?: string } = {},
@@ -78,12 +94,22 @@ export function makeServer(
   return createServer(async (req, res) => {
     const path = (req.url ?? '/').split('?')[0] ?? '/';
     if (req.method === 'GET' && path === '/health') {
-      return json(res, 200, { ok: true, backend: 'mastra', model: config.analystModel });
+      return json(res, 200, { ok: true, backend: 'mastra', model: config.analystModel, fallback: config.fallbackModel });
     }
     if ((req.method === 'GET' || req.method === 'HEAD') && (path === '/' || path.startsWith('/public/'))) {
       return serveStatic(res, opts.publicDir ?? PUBLIC_DIR, path);
     }
+    if (path === '/chat' && req.method === 'OPTIONS') {
+      if (!cors(req, res)) return;
+      res.writeHead(204, {
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Max-Age': '600',
+      });
+      return res.end();
+    }
     if (req.method !== 'POST' || path !== '/chat') return json(res, 404, { error: 'unknown endpoint' });
+    if (!cors(req, res)) return;
     let body: ChatBody;
     try {
       const raw = await readBody(req);
