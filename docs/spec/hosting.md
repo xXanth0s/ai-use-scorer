@@ -15,7 +15,8 @@ Two Vercel projects, both from the `ari-version/` tree:
 
 ## Ari does (hand this over first)
 
-Order matters: steps 1–3 can happen now. Step 4 waits for our push (the additive schema/zod changes and the analyst route land in `ari-version/`).
+PR #1 (self-service onboarding, `ari/automatic-account-onboarding`) is **merged** into our branch. Order matters:
+env vars (1) → migrate (2) → deploy analysis, then web (4). No invite is needed any more (3).
 
 ### 1. Env vars
 
@@ -26,74 +27,58 @@ Order matters: steps 1–3 can happen now. Step 4 waits for our push (the additi
 | `HDYAI_HOSTED` | `1` | already in `vercel.json` |
 | `HDYAI_ANALYSIS_URL` | analysis project origin | already in `vercel.json`; change only if the analysis URL changes |
 | Clerk keys (`CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`) | from Vercel Marketplace Clerk integration | already provisioned per README |
+| **`WEB_PROVISIONING_KEY`** | random server-only secret, 32+ chars, **identical on web and analysis** | **NEW (PR #1)**: HMAC for web→analysis account provisioning |
 | **`ANTHROPIC_API_KEY`** | an Anthropic key with access to `claude-opus-5-5` | **NEW**, used by the analyst chat route `app/api/analyst/route.ts` (server-only, never `NEXT_PUBLIC_`) |
 | **`REPORT_TIMEZONE`** | `Europe/Berlin` | **NEW** (else America/Los_Angeles, which shifts day boundaries). Same value in local dev env |
 
-**analysis project** (`ari-version/services/analysis/`), no new vars:
+**analysis project** (`ari-version/services/analysis/`):
 
 | Var | Value | Status |
 |---|---|---|
 | `DATABASE_URL` / `DATABASE_URL_UNPOOLED` | Neon via Vercel Marketplace | already provisioned |
 | `AI_GATEWAY_API_KEY` | AI Gateway key (Eve model calls) | already; `/api/analyze` returns 503 without it |
-| `PLATFORM_ADMIN_KEY` | owner secret | already; needed for the invite in step 3 |
+| `PLATFORM_ADMIN_KEY` | owner secret | already; only needed for managed invites / revoke |
+| **`WEB_PROVISIONING_KEY`** | the same value as on web | **NEW (PR #1)** |
 
 The analyst route does **not** get `DATABASE_URL`. It reads the report through the analysis service's authenticated
-`/api/published/:id` / `/api/library` using the signed-in user's platform credential, the same way the dashboard does.
-So no Neon credential moves to the web project.
+`/api/published/:id` using the signed-in user's browser credential (`hostedRequest`, Clerk-bound HttpOnly cookie), the same
+way the dashboard does. `/api/analyst` sits under `/api/*`, so in hosted mode Clerk sign-in is required. No Neon credential moves to the web project.
 
-### 2. Neon migrate: **not needed for our change**
-Verified: our additions are zod-only (`services/analysis/agent/lib/contract.ts`, `library.ts`). `scorerMetrics` is stored
-inside the existing `published_reports.data jsonb`, and `metric` evidence ids live in the existing `analysis_jobs.evidence_ids`
-/ `evidence_digests` jsonb columns. `services/analysis/schema.sql` is unchanged. Run the migration only if the Neon DB was never
-migrated at all (fresh project); it is idempotent:
+### 2. Neon migrate: **REQUIRED** (PR #1)
+PR #1's `services/analysis/schema.sql` adds `device_credentials.kind` (collector | browser) and `provision_web_account()`.
+Our own additions need no migration: `scorerMetrics` and `metric` evidence live in existing jsonb columns. Idempotent:
 ```bash
 cd ari-version
 npm run analysis:migrate          # needs services/analysis/.env.local → DATABASE_URL_UNPOOLED
 ```
 
-### 3. Device invite for us (owner only)
-We need one platform user plus one device credential for `scorer sync`. The activation code **expires in 15 minutes and
-is single-use**, so do this when we are online:
-```bash
-cd ari-version
-npm run platform:admin -- invite https://how-do-you-ai-analysis.vercel.app max https://how-do-you-ai.vercel.app
-# → writes .local/activation-<uuid>.json (owner-only); send us the activationCode ("invite_…") privately (not Slack in clear if avoidable)
-```
-`max` = the platform user id (any id ≤100 chars; default daily limit 6 analyses). If we need more demo rehearsals, re-invite with a higher
-limit is not exposed by the script. Instead raise it in Neon: `UPDATE platform_users SET daily_limit=12 WHERE id='max';` (max 20).
-We redeem the code with `scorer sync --activate invite_…` (calls `POST /api/activate`, stores the 30-day `hdyai_…` token
-in `~/.scorer/hdyai.json`, mode 0600). We never run `platform:admin` ourselves.
+### 3. Our account: self-service, no invite
+1. We open the dashboard, sign up with Clerk. The first authenticated setup visit auto-provisions a restricted account
+   (`platform_users.id = 'clerk:user_…'`, daily limit **2** analyses, 3 collector connections, 5 browser sessions).
+2. The setup flow's "copy setup message" step creates a pairing via `POST /api/pairings` (browser credential). It returns
+   an `activationCode` of the same format as before, `invite_` + 43 chars, single-use, valid 15 min.
+3. We redeem it with `scorer sync --activate invite_…` (`POST /api/activate`, unchanged), which stores the 30-day `hdyai_…`
+   collector token in `~/.scorer/hdyai.json` (mode 0600). The synced report shows on the dashboard of that same Clerk user.
 
-For the browser: the same invite's `setupLink` signs the Clerk user into the same platform account, so the synced report
-shows on the dashboard. If Ari prefers to view under their own account, invite `ari` for the browser and we'll sync to `max`.
-Reports are per platform user, so the viewer must be linked to the user we sync as.
-
-### 3b. If PR #1 ("Remove invitation onboarding", `ari/automatic-account-onboarding`) is merged first
-That PR replaces step 3 with self-service accounts. What changes for Ari:
-- **New env var on BOTH projects:** `WEB_PROVISIONING_KEY`, the same random server-only secret (32+ chars).
-- **Neon migrate becomes required:** the PR's `schema.sql` adds `device_credentials.kind` + `provision_web_account()`. Run
-  `npm run analysis:migrate`, then deploy analysis, then web (the order from the PR).
-- **No invite for us.** We sign up on the dashboard, follow the 5-step setup, copy the pairing code from the setup message,
-  and redeem it with `scorer sync --activate invite_…` (same `/api/activate` flow; collector credential, ≤3 per account).
-- **Quota drops to 2 analyses/day** for self-service accounts (`platform_users.daily_limit=2`). For demo rehearsals Ari runs
-  `UPDATE platform_users SET daily_limit=6 WHERE id='clerk:user_…';` on our account id (shown after first sign-in).
-- Merge conflict risk with our commit: `app/dashboard.css` (both append) and `lib/hosted.ts` (we don't edit it; PR does).
+**Ari does:** raise our quota for demo rehearsals (self-service default is 2/day):
+`UPDATE platform_users SET daily_limit=6 WHERE id='clerk:user_…';` (max 20; we send the id after first sign-in).
+The managed `platform:admin -- invite` path still works and keeps its configured limits. Use it only if Ari prefers a managed account.
 
 ### 4. Deploy both projects (after our push)
 ```bash
 cd ari-version && npm ci && npm test && npm run typecheck
-# Vercel: redeploy "analysis" (root services/analysis) FIRST, then "web" (root ari-version)
+# 1) npm run analysis:migrate   2) Vercel: deploy "analysis" (root services/analysis)   3) deploy "web" (root ari-version)
 ```
 `scorer sync` uses the **A-lite** path (merge-design §0–2): it sends only evidence kinds the deployed service already
-accepts, puts our numbers in `metrics` (`scorer_*` keys), and patches TaskSpans onto session summaries. So the hosted demo works
-against the **current** analysis deployment. Redeploying analysis (first) only adds the optional `metric` evidence kind and the
-stored `scorerMetrics` block (Scores tiles on the hosted report). Without it zod just strips `scorerMetrics`.
+accepts, puts our numbers in `metrics` (`scorer_*` keys), and patches TaskSpans onto session summaries. The analysis redeploy
+also adds the optional `metric` evidence kind and the stored `scorerMetrics` block (Scores tiles on the hosted report).
 
 ### Checklist to send back to us
-- [ ] `ANTHROPIC_API_KEY` + `REPORT_TIMEZONE=Europe/Berlin` set on web
-- [ ] (only for a fresh Neon DB) `npm run analysis:migrate`
-- [ ] activation code sent (we redeem within 15 min), **or**, if PR #1 is merged: `WEB_PROVISIONING_KEY` on both projects + `analysis:migrate` + our `daily_limit` raised to 6
-- [ ] both projects redeployed (analysis first), URLs confirmed
+- [ ] `WEB_PROVISIONING_KEY` (same value) on web **and** analysis
+- [ ] `ANTHROPIC_API_KEY` + `REPORT_TIMEZONE=Europe/Berlin` on web
+- [ ] `npm run analysis:migrate` done
+- [ ] analysis deployed, then web; URLs confirmed
+- [ ] after we sign up: our `clerk:user_…` `daily_limit` raised to 6
 
 ---
 
@@ -105,7 +90,7 @@ analysis), while any data change (new ingest, judge labels) gives a new id and c
 
 1. Push the additive changes: `services/analysis` zod (evidence kind `metric`, `publishedReport.scorerMetrics`), KPI tiles,
    `app/api/analyst/route.ts`. Tell Ari to redeploy (analysis first).
-2. Redeem the invite within 15 min of Ari creating it:
+2. Redeem the pairing code from the dashboard setup message within 15 min (section 3):
    ```bash
    uv run scorer sync --activate invite_XXXXXXXX --url https://how-do-you-ai-analysis.vercel.app
    # POST /api/activate → ~/.scorer/hdyai.json (0600): {url, deviceToken: hdyai_…, userId, expiresAt (+30 d)}
@@ -146,7 +131,7 @@ The web project needs **only `ANTHROPIC_API_KEY`**. No `DATABASE_URL`, and no Py
 
 ## Demo-day runbook
 
-- **T-24h**: Ari's checklist done (env incl. `REPORT_TIMEZONE=Europe/Berlin` on web, redeploy, invite redeemed); for the local fallback export with `REPORT_TIMEZONE=Europe/Berlin` in the dev-server env too, so day boundaries match. Run one real `scorer sync --day <yesterday>` and verify the
+- **T-24h**: Ari's checklist done (env incl. `REPORT_TIMEZONE=Europe/Berlin` on web, migrate + redeploy, pairing code redeemed); for the local fallback export with `REPORT_TIMEZONE=Europe/Berlin` in the dev-server env too, so day boundaries match. Run one real `scorer sync --day <yesterday>` and verify the
   hosted report end to end (step 5 above).
 - **T-60 min**: `uv run scorer ingest && uv run scorer judge --day today`. `uv run scorer sync --day <demo day> --dry-run` to check caps and sizes.
   Start the local fallback now: `uv run scorer export-hdyai --day <demo day>` (and `--db demo/scorer-demo.db` for
