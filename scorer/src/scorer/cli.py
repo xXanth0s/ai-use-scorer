@@ -193,7 +193,7 @@ def judge(day, limit, db):
 @cli.command("export-hdyai")
 @click.option("--day", required=True, help="YYYY-MM-DD (report day, our tz)")
 @click.option("--db", default=None)
-@click.option("--out", default="ari-version/.local/sessions.sqlite", show_default=True)
+@click.option("--out", default="../.local/sessions.sqlite", show_default=True)
 @click.option("--tz", default=None, help="Label tz (default: $REPORT_TIMEZONE, else config tz).")
 def export_hdyai(day, db, out, tz):
     """Write our day as Ari's Session + Report rows into their local SQLite (bridge-contract.md)."""

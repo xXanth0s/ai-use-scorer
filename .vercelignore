@@ -17,3 +17,6 @@ services/analysis/.agents
 scripts/deployment-fixture.ts
 scripts/publish-approved-report.ts
 docs/onboarding
+
+# Python harness, docs and demo video are not part of the web/analysis deploys
+scorer

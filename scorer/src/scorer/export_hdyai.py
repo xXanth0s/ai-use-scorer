@@ -1,7 +1,7 @@
-"""Bridge to "how do you ai" (ari-version/): one builder, two writers (docs/spec/bridge-contract.md).
+"""Bridge to "how do you ai" (the Next.js app at the repo root): one builder, two writers (docs/spec/bridge-contract.md).
 
 build(conn, day) -> Bundle with Ari-shaped Session / Report objects + our ScorerMetrics.
-write_local(bundle, out)  -> upsert sessions/reports rows into ari-version/.local/sessions.sqlite.
+write_local(bundle, out)  -> upsert sessions/reports rows into .local/sessions.sqlite (repo root).
 sync(...)                 -> hosted analysis service: /api/sync, /api/analyze, poll, /api/sync(report).
 Read-only on our DB; never calls a model.
 """
@@ -30,7 +30,7 @@ POSITIVE = ("good_spec", "verification_catch", "early_redirect", "scoped_turn", 
 DIMENSIONS = ("Framing", "Context selection", "Iteration", "Verification judgment",
               "Delegation and coordination", "Tool judgment", "Outcome evidence")
 
-# Ari's exact DDL (ari-version/lib/db.ts).
+# Ari's exact DDL (lib/db.ts).
 ARI_DDL = """CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, data TEXT NOT NULL, fingerprint TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);"""
@@ -866,7 +866,7 @@ def _summary(s: dict) -> dict:
 
 
 def _metrics_ts(sessions: list[dict]) -> dict:
-    """Port of ari-version/lib/metrics.ts metrics() (summary-level fields)."""
+    """Port of lib/metrics.ts metrics() (summary-level fields)."""
     measured = [s for s in sessions if (s.get("tokenUsage") or {}).get("records")]
     known = [s for s in sessions if (s.get("tokenUsage") or {}).get("finalOutputCountKnown")]
     matched = [s for s in measured if s["tokenUsage"].get("finalOutputCountKnown")]

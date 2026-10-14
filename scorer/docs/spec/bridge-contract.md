@@ -2,7 +2,7 @@
 
 One Python builder (`src/scorer/export_hdyai.py: build(conn, day, *, tz) -> Bundle`) produces the objects below.
 Two writers consume the **same** objects:
-- **local** (dev/verify loop, phase 1): upsert `sessions` + `reports` rows into `ari-version/.local/sessions.sqlite`.
+- **local** (dev/verify loop, phase 1): upsert `sessions` + `reports` rows into `.local/sessions.sqlite`.
 - **hosted** (product): `scorer sync` → `/api/sync` (summaries) → `/api/analyze` (evidence sample + flat metrics) → poll `/api/analyses/:jobId` → `/api/sync` with `report` (Eve's content + our `scorerMetrics`).
 
 Vocabulary: their **candidate** = our **human**; their **TaskSpan** = our **turn**; their `Session.nativeId` = our `session.id`, their `Session.id` = hash (below).
@@ -37,7 +37,7 @@ Text caps: one Evidence object is built **once** with `text ≤ 1800` chars (hos
 
 Local re-run replaces the same ids. Hosted: complete reports are immutable, so identical data → same id (free re-sync, no new analysis); changed data → new id (costs 1 of 6/day).
 
-## TypeScript (added to `ari-version/lib/types.ts`)
+## TypeScript (added to `lib/types.ts`)
 
 ```ts
 export type EvidenceKind = 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'metric';

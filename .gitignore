@@ -1,12 +1,25 @@
-.venv/
+node_modules/
+.next/
+.local/
+.env*
+!.env.example
+*.tsbuildinfo
+
+vendor/
+.vercel
+
+.vercel/
+.eve/
+.output/
+
+public/plugins/
+
+# scorer harness + local tooling
+scorer/.venv/
 __pycache__/
-*.pyc
-.pytest_cache/
+.claude/worktrees/
 .gstack/
 .context/
-*.db
-report_fallback.txt
-node_modules/
-agent-mastra/dist/
-demo/*.db-wal
-demo/*.db-shm
+# Clerk agent skills dropped by `vercel integration add`
+services/analysis/agent/skills/
+.agents/

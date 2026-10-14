@@ -1,15 +1,15 @@
 # Hosting runbook — scorer data in Ari's app on Vercel
 
-Product = Ari's Next.js app (`ari-version/`) in hosted mode (`HDYAI_HOSTED=1`): Clerk + Neon + the Eve analysis service.
+Product = Ari's Next.js app (the repo root) in hosted mode (`HDYAI_HOSTED=1`): Clerk + Neon + the Eve analysis service.
 Our Python harness stays local (hooks, parser, judge, metrics); only `scorer sync` goes up, through the analysis
 service's authenticated APIs (`/api/activate`, `/api/sync`, `/api/analyze`). Nothing reads local files in hosted mode.
 
-Two Vercel projects, both from the `ari-version/` tree:
+Two Vercel projects, both from the the repo root tree:
 
 | Project | Root dir | Today's URL (README) |
 |---|---|---|
-| web (dashboard) | `ari-version/` | https://how-do-you-ai.vercel.app |
-| analysis (Eve service) | `ari-version/services/analysis/` | https://how-do-you-ai-analysis.vercel.app |
+| web (dashboard) | the repo root | https://how-do-you-ai.vercel.app |
+| analysis (Eve service) | `services/analysis/` | https://how-do-you-ai-analysis.vercel.app |
 
 ---
 
@@ -20,7 +20,7 @@ env vars (1) → migrate (2) → deploy analysis, then web (4). No invite is nee
 
 ### 1. Env vars
 
-**web project** (`ari-version/`):
+**web project** (the repo root):
 
 | Var | Value | Status |
 |---|---|---|
@@ -31,7 +31,7 @@ env vars (1) → migrate (2) → deploy analysis, then web (4). No invite is nee
 | **`ANTHROPIC_API_KEY`** | an Anthropic key with access to `claude-opus-5-5` | **NEW**, used by the analyst chat route `app/api/analyst/route.ts` (server-only, never `NEXT_PUBLIC_`) |
 | **`REPORT_TIMEZONE`** | `Europe/Berlin` | **NEW** (else America/Los_Angeles, which shifts day boundaries). Same value in local dev env |
 
-**analysis project** (`ari-version/services/analysis/`):
+**analysis project** (`services/analysis/`):
 
 | Var | Value | Status |
 |---|---|---|
@@ -48,7 +48,7 @@ way the dashboard does. `/api/analyst` sits under `/api/*`, so in hosted mode Cl
 PR #1's `services/analysis/schema.sql` adds `device_credentials.kind` (collector | browser) and `provision_web_account()`.
 Our own additions need no migration: `scorerMetrics` and `metric` evidence live in existing jsonb columns. Idempotent:
 ```bash
-cd ari-version
+# (repo root)
 npm run analysis:migrate          # needs services/analysis/.env.local → DATABASE_URL_UNPOOLED
 ```
 
@@ -66,8 +66,8 @@ The managed `platform:admin -- invite` path still works and keeps its configured
 
 ### 4. Deploy both projects (after our push)
 ```bash
-cd ari-version && npm ci && npm test && npm run typecheck
-# 1) npm run analysis:migrate   2) Vercel: deploy "analysis" (root services/analysis)   3) deploy "web" (root ari-version)
+npm ci && npm test && npm run typecheck
+# 1) npm run analysis:migrate   2) Vercel: deploy "analysis" (root services/analysis)   3) deploy "web" (root /)
 ```
 `scorer sync` uses the **A-lite** path (merge-design §0–2): it sends only evidence kinds the deployed service already
 accepts, puts our numbers in `metrics` (`scorer_*` keys), and patches TaskSpans onto session summaries. The analysis redeploy
@@ -119,7 +119,7 @@ Quota math: 6 analyses/account/day (40 platform-wide), one active job at a time.
 
 ## Analyst chat on Vercel
 
-Built as `ari-version/app/api/analyst/route.ts`: `ai` SDK `streamText` with `@ai-sdk/anthropic` (`claude-opus-5-5`), tools
+Built as `app/api/analyst/route.ts`: `ai` SDK `streamText` with `@ai-sdk/anthropic` (`claude-opus-5-5`), tools
 `list_sessions`, `query_metrics`, `get_evidence`. It reads the **report object**:
 - hosted: the published report via the analysis service (`/api/published/:id` through `lib/hosted.ts`, with the signed-in user's
   sealed platform credential). The tools only see `scorerMetrics`, `content`, `activity` and the cited `evidenceIndex`
@@ -135,7 +135,7 @@ The web project needs **only `ANTHROPIC_API_KEY`**. No `DATABASE_URL`, and no Py
   hosted report end to end (step 5 above).
 - **T-60 min**: `uv run scorer ingest && uv run scorer judge --day today`. `uv run scorer sync --day <demo day> --dry-run` to check caps and sizes.
   Start the local fallback now: `uv run scorer export-hdyai --day <demo day>` (and `--db demo/scorer-demo.db` for
-  `scorer-demo-<day>`), then `cd ari-version && PORT=3100 npm run dev`, then open `http://127.0.0.1:3100/reports/scorer-<day>`.
+  `scorer-demo-<day>`), then `PORT=3100 npm run dev`, then open `http://127.0.0.1:3100/reports/scorer-<day>`.
 - **T-45 min**: real `scorer sync --day <demo day> --url …` (1 analysis). Wait for complete (poll prints the stage).
 - **T-30 min**: open the hosted report and click through the demo flow: Sessions → report overview (KPI tiles) → evidence inspector →
   analyst panel (ask 2 rehearsed questions, check citations open).
