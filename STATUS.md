@@ -51,3 +51,12 @@ Judge v3 positive episodes + `C+:<episode>` metrics + report line 6 (`edbf5d0`) 
 - Codex hooks still need manual trust approval in Codex.
 - Zoom on Trends/Sessions, wheel zoom and range filtering: not done.
 - Demo DB: after any judge prompt change, realign with `python demo/seed/make_demo_db.py --from ~/.scorer/scorer.db --out demo/scorer-demo.db` (the judge cache is keyed by model + prompt digest).
+
+## Bridge (scorer → Ari's app, in progress)
+Contract: `docs/spec/bridge-contract.md` · hosting runbook: `docs/spec/hosting.md` (Ari does / we do / demo day) · PR #1 (self-service onboarding) still OPEN, both paths documented.
+Export (local SQLite, no collector): `uv run scorer export-hdyai --db demo/scorer-demo.db --day 2026-10-14 --out ari-version/.local/sessions.sqlite` (also `--day 2026-10-13` for candidate attempts; real DB: drop `--db`). Reports written: `scorer-demo-2026-10-14` (12 sessions), `scorer-demo-2026-10-13`, `scorer-attempt-cand-a-2026-10-13`, `scorer-attempt-cand-b-2026-10-13` (role `candidate · retry-flag · 2026-10-13`), `scorer-2026-10-14` (real, 6 sessions). 7 findings + 7 Scores tiles each.
+Start (Node ≥24; one `next dev` per dir, so a running server must be reused):
+`cd ari-version && PATH=/opt/homebrew/Cellar/node/26.7.0/bin:$PATH NEXT_TELEMETRY_DISABLED=1 REPORT_TIMEZONE=Europe/Berlin ANTHROPIC_API_KEY=… PORT=3300 npm run dev`
+URL: http://127.0.0.1:3300/reports/scorer-demo-2026-10-14 (no /setup redirect; JSON at `/api/reports/<id>`). Candidate preview: `/reports/scorer-attempt-cand-b-2026-10-13`.
+Selectors: tabs `[data-testid=report-tab-overview|skills|activity|day|evidence|next]` (Day overview = `day`) · Scores block `[data-testid=scorer-kpis]` · tiles `[data-testid=scorer-tile-V|C|episodes|H|B_min|context|cost]` (tile evidence buttons open the inspector) · timeline `[data-testid=day-timeline]` · evidence inspector `[data-testid=evidence-inspector]` · analyst `[data-testid=analyst-panel]` > `[data-testid=analyst-panel-root]`, input `[data-testid=analyst-input]`.
+Tests: ari-version `npm test` 52/52, typecheck clean (Node 26). Open (fixing now): Scores tz label shows America/Los_Angeles; "Tokens / final output" tile shows "—" for scorer reports; moments say "Candidate" for role self (→ "You"); analyst box inert; 1 console error on load. Hosted `scorer sync` + real-DB screenshot pending.
