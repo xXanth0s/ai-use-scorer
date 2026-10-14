@@ -413,32 +413,31 @@ VIEWS_today = async function () {
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
         <div class="legend"><span><i class="dot claude"></i>Claude</span><span><i class="dot codex"></i>Codex</span><span><i class="ov"></i>Two or more at once</span><span><i class="tk"></i>Interruption</span></div>
         ${d.temp_hidden || S.includeTemp ? `<button type="button" class="btn outline sm" data-toggle-temp aria-pressed="${S.includeTemp ? 'true' : 'false'}">${S.includeTemp ? 'Hide test/temp sessions' : `Show test/temp sessions (${d.temp_hidden})`}</button>` : ''}
+        <button type="button" class="btn outline sm zreset" id="tl-reset" hidden title="Double-click the timeline also resets">Reset zoom</button>
         <button type="button" class="btn outline sm" id="tl-expand" aria-pressed="${S.tlExpanded ? 'true' : 'false'}">${S.tlExpanded ? 'Group by worktree' : 'Show sessions'}</button></div></div>
     <div class="timeline-wrap"><div class="timeline" id="timeline"></div></div>
     <div id="turn-detail"></div>
   </section>
 
   <section class="grid2">
-    <div class="colstack">
-      <div class="panel"><div class="panel-head"><h2>Right now: unverified</h2><span class="note">${un.some((u) => u.command) ? 'run before you push' : 'run the tests before you push'}</span></div>${rightNow}</div>
-      <div class="panel"><div class="panel-head"><h2>Corrections by cause ${UNCAL}</h2><span class="note">${causes.map((c) => `${esc(pretty(c.metric.slice(8)))} ${num(c.value)} (${ownerOf(c.metric.slice(8), null, null)})`).join(' · ')}</span></div>${corr}</div>
-    </div>
-    <div class="colstack">
-      <div class="panel"><div class="panel-head"><h2>Worst attention window</h2><span class="note">${B ? `${num(B.value)} min blocked today` : ''}</span></div>${worst}</div>
-      <div class="panel"><div class="panel-head"><h2>Pattern to repeat</h2></div>${pattern}
+    <div class="panel"><div class="panel-head"><h2>Right now: unverified</h2><span class="note">${un.some((u) => u.command) ? 'run before you push' : 'run the tests before you push'}</span></div>${rightNow}</div>
+    <div class="panel"><div class="panel-head"><h2>Worst attention window</h2><span class="note">${B ? `${num(B.value)} min blocked today` : ''}</span></div>${worst}</div>
+  </section>
+  <section class="grid2 eq">
+    <div class="panel"><div class="panel-head"><h2>Corrections by cause ${UNCAL}</h2><span class="note">${causes.map((c) => `${esc(pretty(c.metric.slice(8)))} ${num(c.value)} (${ownerOf(c.metric.slice(8), null, null)})`).join(' · ')}</span></div>${corr}</div>
+    <div class="panel" id="strengths" aria-labelledby="strengths-h">
+      <div class="panel-head"><h2 id="strengths-h">What you did well</h2><span class="note">choices worth repeating</span></div>
+      <div id="strengths-body"><span class="shimmer" style="font-size:13px">Loading</span></div></div>
+  </section>
+  <section class="grid2">
+    <div class="panel"><div class="panel-head"><h2>Pattern to repeat</h2></div>${pattern}
         <div class="panel-head" style="margin-top:4px"><span class="note">Most-used tools · by you / by the agent</span><a class="note" href="#/leverage">All in Leverage</a></div>
         ${skillBars(d, 'all', 4)}</div>
-    </div>
   </section>
 
   <section class="panel">
     <div class="panel-head"><h2>Diagnostics</h2><span class="note">context for the numbers, not scored</span></div>
     ${diag}
-  </section>
-
-  <section class="panel" id="strengths" aria-labelledby="strengths-h">
-    <div class="panel-head"><h2 id="strengths-h">What you did well</h2><span class="note">your choices worth repeating</span></div>
-    <div id="strengths-body"><span class="shimmer" style="font-size:13px">Loading</span></div>
   </section>
 
   <section class="panel" id="actions" aria-labelledby="actions-h">
@@ -451,6 +450,7 @@ VIEWS_today = async function () {
 cache.actions = new Map();
 const getActions = (d) => { if (!cache.actions.has(d)) cache.actions.set(d, optional(`/api/actions?day=${d}`)); return cache.actions.get(d); };
 let actionItems = [], strengthItems = [];
+const EPISODES = ['good_spec', 'verification_catch', 'early_redirect', 'scoped_turn', 'knew_when_not_to_delegate'];
 cache.strengths = new Map();
 const getStrengths = (d) => { if (!cache.strengths.has(d)) cache.strengths.set(d, optional(`/api/strengths?day=${d}`)); return cache.strengths.get(d); };
 function actionsHTML(r, kind = 'a') {
@@ -460,11 +460,12 @@ function actionsHTML(r, kind = 'a') {
     const what = good ? 'Strengths' : 'Action items';
     return `<p class="sub-note">${r && r.available === false ? `${what} appear here once the judge provides them (<code class="cmd">scorer judge</code>).` : r && r.error ? `Could not compute ${what.toLowerCase()} for this day.` : good ? 'Nothing flagged as a strength for this day yet.' : 'No action items for this day.'}</p>`;
   }
+  if (good) { const ord = (a) => (a.episode ? EPISODES.indexOf(a.episode) : 99); items.sort((x, y) => ord(x) - ord(y)); r.items = items; }
   return `<ol class="actions${good ? ' good' : ''}">${items.map((a, i) => `<li>
       <span class="an" aria-hidden="true">${i + 1}</span>
       <div class="ab">
         <div class="at">${esc(a.text)}</div>
-        <div class="am">${a.category ? `<span class="badge ${good ? 'grass' : 'tag'}">${esc(pretty(a.category))}</span>` : ''}${a.count ? `<span class="muted">${num(a.count)}×</span>` : ''}${a.uncalibrated || a.source === 'judge' ? UNCAL : ''}${turnLinks(a.turn_ids)}
+        <div class="am">${a.episode ? `<span class="badge episode">${esc(pretty(a.episode))}</span>` : ''}${a.category ? `<span class="badge ${good ? 'grass' : 'tag'}">${esc(pretty(a.category))}</span>` : ''}${a.count ? `<span class="muted">${num(a.count)}×</span>` : ''}${a.uncalibrated || a.source === 'judge' ? UNCAL : ''}${turnLinks(a.turn_ids)}
           <button type="button" class="linkbtn" data-askwhy="${kind}:${i}">${icon('spark')}${good ? 'Ask how to repeat it' : 'Ask why'}</button></div>
         ${a.example_quote ? `<blockquote class="q">${esc(a.example_quote)}</blockquote>` : ''}
         ${a.claude_md_line ? `<div class="mdline"><span class="lbl">CLAUDE.md</span><code class="cmd">${esc(a.claude_md_line)}</code><button type="button" class="btn outline sm" data-copyline="${kind}:${i}" aria-label="Copy the CLAUDE.md line">Copy</button></div>` : ''}
@@ -601,8 +602,14 @@ function drawTimeline() {
     const maxTicks = Math.max(3, Math.floor((Math.max(host.clientWidth, 480) - 208) / 64));
     const hour = 3600e3;
     const pad = (st) => { const u = Math.max(st, hour); return [Math.floor((t0 - st * 0.25) / u) * u, Math.ceil((t1 + st * 0.25) / u) * u]; };
-    const step = STEPS.find((st) => { const [a, b] = pad(st); return (b - a) / st <= maxTicks; }) || STEPS[STEPS.length - 1];
+    let step = STEPS.find((st) => { const [a, b] = pad(st); return (b - a) / st <= maxTicks; }) || STEPS[STEPS.length - 1];
     [t0, t1] = pad(step);
+    if (S.tlZoom) {   // Grafana-style zoom: exact range, ticks recomputed (minutes below 2 h)
+      [t0, t1] = S.tlZoom;
+      const ZS = [1, 2, 5, 10, 15, 30, 60, 120].map((m) => m * 60e3);
+      step = ZS.find((st) => (t1 - t0) / st <= maxTicks) || ZS[ZS.length - 1];
+    }
+    const firstTick = Math.ceil(t0 / step) * step;
 
     const W = Math.max(host.clientWidth, 480), LBL = 200, R = 8, TOP = 22, LANE = 28, GH = 24, BAR = 12, STRIP = 32;
     const x = (ms) => LBL + ((ms - t0) / (t1 - t0)) * (W - LBL - R);
@@ -614,14 +621,14 @@ function drawTimeline() {
     const lanesH = rows.reduce((a, r) => a + r.h, 0);
     const H = TOP + lanesH + 4;
     const parts = [];
-    for (let t = t0; t <= t1; t += step) {
+    for (let t = firstTick; t <= t1; t += step) {
       const xx = x(t).toFixed(1);
       parts.push(`<line class="grid" x1="${xx}" x2="${xx}" y1="${TOP - 4}" y2="${TOP + lanesH}"/>`);
       parts.push(`<text x="${xx}" y="12" text-anchor="${t + step > t1 ? 'end' : 'middle'}">${hhmm(new Date(t).toISOString())}</text>`);
     }
     for (const o of d.overlap) {
       const a = x(+new Date(o.start)), b = x(+new Date(o.end));
-      parts.push(`<rect class="overlap" x="${a.toFixed(1)}" y="${TOP - 4}" width="${Math.max(b - a, 1).toFixed(1)}" height="${lanesH + 4}"/>`);
+      parts.push(`<rect class="overlap" clip-path="url(#tlclip)" x="${a.toFixed(1)}" y="${TOP - 4}" width="${Math.max(b - a, 1).toFixed(1)}" height="${lanesH + 4}"/>`);
     }
     let y = TOP;
     const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -644,7 +651,7 @@ function drawTimeline() {
           const s = t._s || r.s;
           const a = x(+new Date(t.start)), b = x(endOf(t));
           const cls = `bar ${s.agent === 'codex' ? 'codex' : 'claude'}${t.interrupted ? ' interrupted' : ''}${S.selTurn === t.id ? ' sel' : ''}`;
-          parts.push(`<rect class="${cls}" data-turn="${t.id}" data-sess="${esc(s.id)}" x="${a.toFixed(1)}" y="${cy - BAR / 2}" width="${Math.max(b - a, 3).toFixed(1)}" height="${BAR}" rx="2"/>`);
+          parts.push(`<rect class="${cls}" clip-path="url(#tlclip)" data-turn="${t.id}" data-sess="${esc(s.id)}" x="${a.toFixed(1)}" y="${cy - BAR / 2}" width="${Math.max(b - a, 3).toFixed(1)}" height="${BAR}" rx="2"/>`);
         }
         const ints = r.type === 'session' ? (r.s.interrupts || []) : r.g.sessions.flatMap((s) => s.interrupts || []);
         for (const it of ints) {
@@ -654,7 +661,10 @@ function drawTimeline() {
       }
       y += r.h;
     });
-    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Agent activity by worktree">${parts.join('')}</svg>`;
+    host._map = { t0, t1, LBL, R, W };
+    host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Agent activity by worktree"><defs><clipPath id="tlclip"><rect x="${LBL}" y="0" width="${W - LBL - R}" height="${H}"/></clipPath></defs>${parts.join('')}</svg><div class="zsel" hidden></div>`;
+    const rz = $('#tl-reset'); if (rz) rz.hidden = !S.tlZoom;
+    bindZoom(host);
   });
 }
 
@@ -1165,12 +1175,47 @@ document.addEventListener('keydown', (e) => {
   const tr = e.target.closest && (e.target.closest('tr[data-turnrow]') || e.target.closest('tr[data-session]'));
   if (tr && tr === e.target) { e.preventDefault(); tr.click(); }
 });
+/* drag horizontally on the timeline to zoom into a range; double-click or "Reset zoom" to reset */
+function bindZoom(host) {
+  if (host._zoomBound) return;
+  host._zoomBound = true;
+  let x0 = null, moved = false;
+  const svgX = (ev) => { const r = host.querySelector('svg').getBoundingClientRect(); return { px: ev.clientX - r.left, scale: host._map.W / r.width, left: r.left }; };
+  const toMs = (px, scale) => { const m = host._map; const xv = px * scale; return m.t0 + ((xv - m.LBL) / (m.W - m.LBL - m.R)) * (m.t1 - m.t0); };
+  host.addEventListener('mousedown', (ev) => {
+    if (ev.button !== 0 || !host._map) return;
+    const { px, scale } = svgX(ev);
+    if (px * scale < host._map.LBL) return;
+    x0 = px; moved = false;
+  });
+  window.addEventListener('mousemove', (ev) => {
+    if (x0 == null) return;
+    const { px } = svgX(ev);
+    if (!moved && Math.abs(px - x0) < 5) return;
+    moved = true;
+    const sel = host.querySelector('.zsel'); if (!sel) return;
+    sel.hidden = false; sel.style.left = `${Math.min(px, x0)}px`; sel.style.width = `${Math.abs(px - x0)}px`;
+  });
+  window.addEventListener('mouseup', (ev) => {
+    if (x0 == null) return;
+    const start = x0; x0 = null;
+    const sel = host.querySelector('.zsel'); if (sel) sel.hidden = true;
+    if (!moved) return;
+    const { px, scale } = svgX(ev);
+    const a = toMs(Math.min(px, start), scale), b = toMs(Math.max(px, start), scale);
+    if (b - a >= 60e3) { S.tlZoom = [a, b]; drawTimeline(); }
+    host._suppressClick = true; setTimeout(() => { host._suppressClick = false; }, 0);
+  });
+  host.addEventListener('click', (ev) => { if (host._suppressClick) { ev.stopPropagation(); ev.preventDefault(); } }, true);
+  host.addEventListener('dblclick', () => { if (S.tlZoom) { S.tlZoom = null; drawTimeline(); } });
+}
+document.addEventListener('click', (e) => { if (e.target.closest('#tl-reset')) { S.tlZoom = null; drawTimeline(); } });
 let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(drawTimeline, 120); });
 
 /* ---------------- header: day picker, theme, ask toggle ---------------- */
 function setDay(d) {
   if (!d || d === S.day) return;
-  S.day = d; S.selTurn = null; $('#day').value = d;
+  S.day = d; S.selTurn = null; S.tlZoom = null; $('#day').value = d;
   const u = new URL(location.href); u.searchParams.set('day', d); history.replaceState(null, '', u);
   render();
 }

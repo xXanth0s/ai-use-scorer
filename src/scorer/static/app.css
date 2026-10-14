@@ -636,3 +636,11 @@ ol.actions.good .an { background: var(--success-muted); color: var(--success); }
 details.sqlq { margin-top: 4px; }
 details.sqlq summary { font-size: 12px; color: var(--muted-foreground); cursor: pointer; width: max-content; }
 details.sqlq pre { margin: 6px 0 0; padding: 8px 10px; background: var(--muted); border-radius: calc(var(--radius) - 2px); font-family: var(--font-code); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+
+/* timeline drag-zoom */
+.timeline { position: relative; user-select: none; }
+.timeline .zsel { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--brand-pine) 14%, transparent); border-left: 1px solid var(--brand-pine); border-right: 1px solid var(--brand-pine); pointer-events: none; }
+.grid2.eq { align-items: stretch; }
+.grid2.eq > .panel { height: 100%; }
+.badge.episode { background: var(--brand-pine); color: #fff; border-color: var(--brand-pine); }
+.btn.zreset[hidden] { display: none; }
