@@ -18,6 +18,7 @@
     "plugin:build": "node --import tsx scripts/build-plugin.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.79",
     "@clerk/nextjs": "^7.9.15",
     "@neondatabase/serverless": "^1.2.0",
     "ai": "^7.0.140",

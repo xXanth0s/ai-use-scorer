@@ -134,7 +134,7 @@ The web project needs **only `ANTHROPIC_API_KEY`**. No `DATABASE_URL`, and no Py
 
 ## Demo-day runbook
 
-- **T-24h**: Ari's checklist done (env, redeploy, invite redeemed). Run one real `scorer sync --day <yesterday>` and verify the
+- **T-24h**: Ari's checklist done (env incl. `REPORT_TIMEZONE=Europe/Berlin` on web, redeploy, invite redeemed); for the local fallback export with `REPORT_TIMEZONE=Europe/Berlin` in the dev-server env too, so day boundaries match. Run one real `scorer sync --day <yesterday>` and verify the
   hosted report end to end (step 5 above).
 - **T-60 min**: `uv run scorer ingest && uv run scorer judge --day today`. `uv run scorer sync --day <demo day> --dry-run` to check caps and sizes.
   Start the local fallback now: `uv run scorer export-hdyai --day <demo day>` (and `--db demo/scorer-demo.db` for
