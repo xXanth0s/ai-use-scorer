@@ -188,3 +188,57 @@ def judge(day, limit, db):
     click.echo("events: " + " ".join(f"{k}={v}" for k, v in sorted(st["dist"].items())))
     click.echo("sources: " + " ".join(f"{k}={v}" for k, v in sorted(st["sources"].items()))
                + ("  (regex = stand-in, confidence 0.3)" if "regex" in st["sources"] else ""))
+
+
+@cli.command("export-hdyai")
+@click.option("--day", required=True, help="YYYY-MM-DD (report day, our tz)")
+@click.option("--db", default=None)
+@click.option("--out", default="ari-version/.local/sessions.sqlite", show_default=True)
+@click.option("--tz", default=None, help="Label tz (default: $REPORT_TIMEZONE, else config tz).")
+def export_hdyai(day, db, out, tz):
+    """Write our day as Ari's Session + Report rows into their local SQLite (bridge-contract.md)."""
+    import os
+    os.environ.setdefault("SCORER_NO_LLM", "1")
+    from .db import connect
+    from .export_hdyai import build, write_local
+    from .judge import resolve_day
+    db = _pin_db(db)
+    b = build(connect(db), resolve_day(day), tz=tz)
+    if not b["reports"]:
+        click.echo(f"no sessions on {day}")
+        sys.exit(1)
+    write_local(b, out)
+    from .config import load
+    click.echo(f"label tz {b['tz']} · day {b['day']} (day bucketing: {load().timezone or 'system tz'}) → {out}")
+    for r in b["reports"]:
+        rep = r["local"]
+        tiles = " ".join(f"{t['key']}={t['display']}" for t in rep["scorerMetrics"]["tiles"])
+        click.echo(f"  {rep['id']}: {len(rep['snapshot'])} sessions, "
+                   f"{sum(len(s['events']) for s in rep['snapshot'])} events, "
+                   f"{len(rep['content']['findings'])} findings, {len(rep['content']['moments'])} moments · {tiles}")
+
+
+@cli.command()
+@click.option("--day", default=None, help="YYYY-MM-DD")
+@click.option("--db", default=None)
+@click.option("--url", default="https://how-do-you-ai-analysis.vercel.app", show_default=True)
+@click.option("--token", default=None, help="Device token (default: SCORER_HOME/hdyai.json)")
+@click.option("--activate", "activation", default=None, help="Redeem an invite_… code from the owner.")
+@click.option("--dry-run", "dry_run", default=None, help="Write payloads to this file; no HTTP.")
+def sync(day, db, url, token, activation, dry_run):
+    """Upload our day to the hosted analysis service (/api/sync + /api/analyze)."""
+    import os
+    os.environ.setdefault("SCORER_NO_LLM", "1")
+    from .export_hdyai import activate, build, sync as _sync
+    if activation:
+        r = activate(url, activation)
+        click.echo(f"activated as {r['userId']} until {r['expiresAt']}")
+        if not day:
+            return
+    if not day:
+        raise click.UsageError("--day is required")
+    from .db import connect
+    from .judge import resolve_day
+    b = build(connect(_pin_db(db)), resolve_day(day))
+    for r in _sync(b, url, token, dry_run=dry_run, echo=click.echo):
+        click.echo("  " + " ".join(f"{k}={v}" for k, v in r.items()))
