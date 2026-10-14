@@ -5,7 +5,7 @@
 #   PROMPT="say hi, then run 'ls' with the Bash tool" scripts/demo_e2e.sh
 #
 # Uses scripts/demo.json (generate with:
-#   uv run scorer install --agent claude --settings scripts/demo.json --yes)
+#   uv run scorer install --agent claude --settings scripts/demo.json --no-schedule --yes)
 # Never touches ~/.claude/settings.json. SCORER_HOME defaults to a fresh tmp dir.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
