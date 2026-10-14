@@ -10,6 +10,7 @@ Metrics must be recomputed in the same run (turn ids change on reinsert).
 """
 from __future__ import annotations
 
+import fnmatch
 import glob
 import json
 import os
@@ -144,16 +145,110 @@ def cwd_matches(cwd: str | None, prefixes: list[str]) -> bool:
     return False
 
 
+# Lab / scratch / temp sessions must not pollute the human's real day (`scorer ingest`
+# excludes them by default; --include-lab opts back in; config.toml `exclude_cwd = [...]`
+# replaces this list). Pattern forms:
+#   contains "/"  -> path glob on the cwd (~ and $VARS expanded, symlinks resolved, so
+#                    /tmp == /private/tmp); a trailing "/**" also matches the dir itself.
+#                    A pattern with an unset $VAR is ignored.
+#   no "/"        -> glob on the cwd's basename.
+# The judge workdir (judge.judge_cwd) is always excluded on top of the list.
+DEFAULT_EXCLUDE_CWD: tuple[str, ...] = (
+    "/tmp/**",
+    "/private/tmp/**",
+    "/private/var/folders/**",
+    "$TMPDIR/**",
+    "~/scorer-lab/**",
+    "~/.scorer-lab/**",
+    "~/.scorer-*/**",
+    "scorer-capture-repo.*",
+    "scorer-e2e.*",
+    "scorer-judge*",
+    "lab-*",
+)
+
+_GLOB = set("*?[")
+
+
+def _judge_dirs() -> list[str]:
+    from .model import scorer_home
+    h = scorer_home()
+    return [str(h / "judge") + "/**", str(h / "scorer-judge") + "/**"]
+
+
+def default_exclude_patterns() -> list[str]:
+    """config.toml `exclude_cwd` if set, else DEFAULT_EXCLUDE_CWD; plus the judge workdir."""
+    from .config import load
+    cfg = load().exclude_cwd
+    return list(cfg if cfg is not None else DEFAULT_EXCLUDE_CWD) + _judge_dirs()
+
+
+def _resolve_pattern(pat: str) -> list[str] | None:
+    """Path pattern -> [expanded, symlink-resolved] variants; None if a $VAR is unset."""
+    e = os.path.expanduser(os.path.expandvars(pat))
+    if "$" in e:
+        return None
+    e = os.path.normpath(e)
+    parts = e.split(os.sep)
+    i = next((k for k, c in enumerate(parts) if _GLOB & set(c)), len(parts))
+    head, tail = os.sep.join(parts[:i]) or os.sep, parts[i:]
+    real = os.path.join(os.path.realpath(head), *tail) if tail else os.path.realpath(head)
+    return list(dict.fromkeys([e, real]))
+
+
+def cwd_excluded(cwd: str | None, patterns: list[str]) -> bool:
+    """True if cwd matches any exclusion pattern (see DEFAULT_EXCLUDE_CWD)."""
+    if not cwd or not patterns:
+        return False
+    raw = os.path.normpath(os.path.expanduser(cwd))
+    cands = list(dict.fromkeys([raw, _real(cwd)]))
+    for pat in patterns:
+        if "/" not in pat:
+            if any(fnmatch.fnmatchcase(os.path.basename(c), pat) for c in cands):
+                return True
+            continue
+        for p in _resolve_pattern(pat) or []:
+            if p.endswith("/**"):
+                base = p[:-3].rstrip(os.sep) or os.sep
+                if any(fnmatch.fnmatchcase(c, base) or fnmatch.fnmatchcase(c, base.rstrip(os.sep) + "/*")
+                       for c in cands):
+                    return True
+            elif any(fnmatch.fnmatchcase(c, p) for c in cands):
+                return True
+    return False
+
+
+def _is_excluded(cwd: str | None, exclude: list[str], prefixes: list[str]) -> bool:
+    """Excluded unless explicitly included by a --cwd-prefix / SCORER_CWD_PREFIX (lab mode)."""
+    if not exclude or not cwd_excluded(cwd, exclude):
+        return False
+    return not (prefixes and cwd_matches(cwd, prefixes))
+
+
+def purge_excluded(conn: sqlite3.Connection, exclude: list[str], prefixes: list[str]) -> int:
+    """Delete stored sessions (and children) that the exclusion now covers. judge_label rows stay."""
+    ids = [r[0] for r in conn.execute("SELECT id, cwd FROM session").fetchall()
+           if _is_excluded(r[1], exclude, prefixes)]
+    with conn:
+        for sid in ids:
+            delete_session(conn, sid)
+    return len(ids)
+
+
 def run_ingest(conn: sqlite3.Connection, *, since_days: int, claude_root: str, codex_root: str,
-               events_file: str | None, cwd_prefixes: list[str] | None = None) -> int:
-    """cwd_prefixes=None -> env SCORER_CWD_PREFIX; empty -> no filter."""
+               events_file: str | None, cwd_prefixes: list[str] | None = None,
+               exclude_cwd: list[str] | None = None) -> int:
+    """cwd_prefixes=None -> env SCORER_CWD_PREFIX; empty -> no filter.
+    exclude_cwd: cwd patterns to drop (and purge from the DB) unless under an explicit prefix;
+    None/empty -> no exclusion. The CLI passes default_exclude_patterns() unless --include-lab."""
     prefixes = list(cwd_prefixes) if cwd_prefixes else cwd_prefixes_from_env()
+    exclude = list(exclude_cwd or [])
     hooks = load_hook_events(events_file)
     run_id = conn.execute("INSERT INTO ingest_run(at, parser_version) VALUES (?,?)",
                           (datetime.now(timezone.utc).isoformat(), PARSER_VERSION)).lastrowid
     jobs: list[tuple[str, str]] = [("claude", p) for p in discover_claude(claude_root, since_days)]
     jobs += [("codex", p) for p in discover_codex(codex_root, since_days)]
-    ok = fail = skipped = 0
+    ok = fail = skipped = excluded = 0
     for agent, path in jobs:
         try:
             if agent == "claude":
@@ -169,6 +264,9 @@ def run_ingest(conn: sqlite3.Connection, *, since_days: int, claude_root: str, c
             if prefixes and not cwd_matches(b.session.cwd, prefixes):
                 skipped += 1
                 continue
+            if _is_excluded(b.session.cwd, exclude, prefixes):
+                excluded += 1
+                continue
             with conn:
                 write_bundle(conn, b)
             ok += 1
@@ -176,6 +274,9 @@ def run_ingest(conn: sqlite3.Connection, *, since_days: int, claude_root: str, c
             fail += 1
             log(f"ingest: skip {os.path.basename(path)}: {type(e).__name__}: {str(e)[:80]}")
     conn.commit()
+    if exclude:
+        purged = purge_excluded(conn, exclude, prefixes)
+        log(f"ingest: excluded {excluded} lab/scratch session(s), purged {purged} from the DB")
     if prefixes:
         log(f"ingest: cwd filter kept {ok}, skipped {skipped} session(s) outside "
             f"{len(prefixes)} prefix(es)")

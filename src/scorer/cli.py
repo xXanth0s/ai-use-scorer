@@ -72,15 +72,18 @@ def _days(s: str) -> int:
 @click.option("--no-metrics", is_flag=True)
 @click.option("--cwd-prefix", "cwd_prefixes", multiple=True,
               help="Keep only sessions whose cwd is under this dir (repeatable; default: env SCORER_CWD_PREFIX).")
-def ingest(since, claude_root, codex_root, events_file, db, no_metrics, cwd_prefixes):
+@click.option("--include-lab", is_flag=True,
+              help="Also ingest lab/scratch/temp sessions (excluded and purged by default; config: exclude_cwd).")
+def ingest(since, claude_root, codex_root, events_file, db, no_metrics, cwd_prefixes, include_lab):
     """Parse transcripts + hook events into SQLite, then compute metrics."""
     from .db import connect
-    from .ingest import run_ingest
+    from .ingest import default_exclude_patterns, run_ingest
     from .model import events_path
     conn = connect(db)
     run_id = run_ingest(conn, since_days=_days(since), claude_root=claude_root, codex_root=codex_root,
                         events_file=events_file or str(events_path()),
-                        cwd_prefixes=list(cwd_prefixes) or None)
+                        cwd_prefixes=list(cwd_prefixes) or None,
+                        exclude_cwd=None if include_lab else default_exclude_patterns())
     if not no_metrics:
         from .metrics import compute_all
         compute_all(conn, run_id)

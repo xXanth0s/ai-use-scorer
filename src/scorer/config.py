@@ -5,6 +5,7 @@
   report_time = "18:00"           # daily launchd/cron ingest + report
   judge_model = "claude-haiku-5-5"
   analyst_model = "claude-opus-5-5"
+  exclude_cwd = ["/tmp/**", "lab-*"]  # replaces ingest.DEFAULT_EXCLUDE_CWD
   [prices."claude-opus-5-5"]      # USD per 1M tokens; overrides prices.py
   input = 5.0
   cached = 0.5
@@ -29,6 +30,7 @@ class Config:
     judge_model: str = "claude-haiku-5-5"
     analyst_model: str = "claude-opus-5-5"
     prices: dict = field(default_factory=dict)
+    exclude_cwd: tuple[str, ...] | None = None  # None -> ingest.DEFAULT_EXCLUDE_CWD
 
 
 def _hhmm(s: str, default: time) -> time:
@@ -54,4 +56,5 @@ def load() -> Config:
         judge_model=d.get("judge_model", base.judge_model),
         analyst_model=d.get("analyst_model", base.analyst_model),
         prices=d.get("prices") or {},
+        exclude_cwd=tuple(str(x) for x in d["exclude_cwd"]) if isinstance(d.get("exclude_cwd"), list) else None,
     )
