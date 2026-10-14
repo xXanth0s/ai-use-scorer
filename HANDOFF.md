@@ -1,6 +1,8 @@
 # HANDOFF: scorer
 
-Last updated: 2026-10-14 · git `4291839` (main). Untracked: `demo/` and `docs/spec/video-brief.md`, owned by the video agent. Another agent was mid-edit at handoff time: uncommitted changes in `cli.py`, `judge.py`, `metrics.py`, `parse_claude.py`, `serve.py`, `classify.py`, `model.py`, `static/` and tests, including a new `SCORER_DB` env var. This document describes commit `4291839`; run `git status` first.
+Last updated: 2026-10-14 (evening) · git `cc5900f` (main), remote `origin` = GitHub `xXanth0s/ai-use-scorer` (the lead pushes; agents commit only their own files). Untracked: `demo/` (video agent, includes `demo/seed/make_demo_db.py` and `demo/scorer-demo.db`) and `docs/spec/{bridge-brief,metrics-merged,video-brief,video-storyboard,video-usecases}.md`. Run `git status` first.
+
+**`ari-version/` is a teammate's (Ari's) separate Next.js app, merged from origin/main in `9514601`. Never modify anything under `ari-version/`.** The README has our scorer section on top and Ari's section below.
 
 Read this first, then `STATUS.md` (milestone log), `docs/spec/metrics-v1.md` (source of truth for metrics, DDL and definitions) and `DESIGN.md` (dashboard theme).
 
@@ -12,7 +14,7 @@ scorer measures how well a human drives coding agents (Claude Code and Codex). I
 
 **Principle: score the human's choices, not the agent.** Every event carries `initiator = human | agent | default`. Agent-driven work (subagent threads, agent-initiated turns) is kept for tokens and cost but excluded from human time and scoring.
 
-**Current focus: self-review** (your own daily use). Candidate/hiring mode (spec §1 "Candidate mode", metric E) is **deferred**. The Candidate tab was removed from the dashboard, and the judge is uncalibrated.
+**Current focus: self-review** (your own daily use). Candidate/hiring mode (spec §1 "Candidate mode", metric E) is **out of the UI for now** (user decision): no Candidate tab, nothing candidate-related on the dashboard. It can be added later. The judge is uncalibrated.
 
 ---
 
@@ -24,15 +26,15 @@ scorer measures how well a human drives coding agents (Claude Code and Codex). I
 | Install | `scorer install/uninstall` shows a diff first, merges one scorer group per event, writes atomically with a `.bak`, and is idempotent. Modes: **global** (`~/.claude/settings.json`, `~/.codex/hooks.json`) plus a daily **launchd** job (cron on Linux) and a default `config.toml`; **`--project DIR`** (lab: `.claude/settings.local.json` and `.codex/hooks.json`, pinned to the current `SCORER_HOME`, no schedule); `--no-schedule`; `--dry-run`. | `install.py` |
 | Parsers | Claude: turns, prompts, queued prompts, interrupts, subagent folding, requestId dedupe, compaction, tooling events. Codex 0.155–0.160 rollouts: `token_usage_record` dedupe by `response_id`, CommandExecution/FileChange from code-mode `exec`, apply_patch edits, steer becomes a queued turn, subagent threads become their own sessions. Both are pure: `parse(path, hook_events) -> Bundle`. | `parse_claude.py`, `parse_codex.py`, `model.py`, `docs/notes/*-format.md` |
 | Ingest + exclusion + purge | Discovery by mtime (`--since Nd`), idempotent per-session delete and reinsert, Stop-hook turn ends and git snapshots joined from `events.jsonl`. Lab, scratch and temp cwds are **excluded and purged by default** (`DEFAULT_EXCLUDE_CWD`, config `exclude_cwd`, `--include-lab`). `--cwd-prefix` / `SCORER_CWD_PREFIX` keeps only one tree, and an explicit prefix wins over exclusion. The judge workdir is always excluded. | `ingest.py`, `db.py` |
-| Metrics | Deterministic V / H / B plus all diagnostics: active time, overlap, gaps, interrupts, context occupancy, tokens, cost per model, subagents, orientation, and tooling by initiator. The Bash intent classifier handles wrappers, heredocs, pipes and masked exit codes. Day = config `day_cutoff`, cutoff to cutoff in local tz. | `metrics.py`, `classify.py`, `prices.py`, `config.py` |
+| Metrics | Deterministic V / H / B plus all diagnostics. **Attribution rules (`f160daf`, definition v2):** subagent calls inherit the spawning turn's initiator; `asked_by_you` counts humans only; hand edits exclude parallel-session and subagent edits; the verification tier is the last relevant check in the window, with `recovered` (red → green) and `V_recovered`; `/exit` is no longer a turn: active time, overlap, gaps, interrupts, context occupancy, tokens, cost per model, subagents, orientation, and tooling by initiator. The Bash intent classifier handles wrappers, heredocs, pipes and masked exit codes. Day = config `day_cutoff`, cutoff to cutoff in local tz. | `metrics.py`, `classify.py`, `prices.py`, `config.py` |
 | Check | Replay invariants (spec §6e): no negative gaps, usage deduped, tool results, overlap only across sessions, turn counts. | `check.py` |
 | Report | `scorer report`: the 8-line structure from spec §2 with a 7-day baseline and $ per model, then "What you did well" and "Action items". It adds an analyst narrative when a key is present. `report.facts()` is the single source for both report and dashboard verdicts. | `report.py`, `scripts/report_fallback.sh` |
-| Judge (v2) | Correction episodes on 3 axes (event / cause / detection) plus defect_caught/resolved. Per turn it adds `user_action`, `preventable_by_user`, `action_category`, `user_strength` and `strength_category` (strengths = positive episodes). Model is `claude-haiku-5-5` with a strict tool schema; evidence must be an exact prompt substring, otherwise the judge abstains. Labels are cached in `judge_label` by turn hash (`PROMPT_VERSION="judge-v2"`). Backend chain: API → `claude -p` → regex (flagged, confidence 0.3). Daily **action items** and **strengths** are clustered by one Haiku call and cached in `judge_action`. **Attribution** sorts corrections into user_preventable / agent_error / environment / unclear, and splits verification and tooling into you / agent. | `judge.py`, `tests/judge/` |
-| Analyst agent (Python, default) | Anthropic tool-use loop with `query_db` (read-only connection, authorizer, clipping views), `get_turn`, `get_metric` and `list_sessions`. It returns citations as `[turn:id]` pills, streams over SSE, generates the narrative and adds Haiku quick-reply tiles. Default model is `claude-opus-5-5`, with `claude-sonnet-5-5` as fallback. | `agent.py` |
+| Judge (v3) | Correction episodes on 3 axes (event / cause / detection) plus defect_caught/resolved. Per turn it adds `user_action`, `preventable_by_user`, `action_category`, `user_strength` and `strength_category` (strengths = positive episodes). **v3 (`edbf5d0`)** adds data-gated positive episodes (`good_spec`, `verification_catch`, `early_redirect`, `scoped_turn`, `knew_when_not_to_delegate`) as `C+:<episode>` metrics; report line 6 ("repeat") comes from them, and the first prompt of each session is labelled too. Model is `claude-haiku-5-5` with a strict tool schema; evidence must be an exact prompt substring, otherwise the judge abstains. Labels are cached in `judge_label` by turn hash (`PROMPT_VERSION="judge-v3"`; the cache key is model + prompt digest, so any prompt change re-labels). Backend chain: API → `claude -p` → regex (flagged, confidence 0.3). Daily **action items** and **strengths** are clustered by one Haiku call and cached in `judge_action`. **Attribution** sorts corrections into user_preventable / agent_error / environment / unclear, and splits verification and tooling into you / agent. | `judge.py`, `tests/judge/` |
+| Analyst agent (Python, default) | Anthropic tool-use loop with `query_db` (read-only connection, authorizer, clipping views), `get_turn`, `get_metric` and `list_sessions`. It returns citations as `[turn:id]` pills, streams over SSE, generates the narrative and adds Haiku quick-reply tiles. Default model is `claude-opus-5-5`, with `claude-sonnet-5-5` as fallback. Since `53f4a94`: concise answers (lead with the answer, ~120-word cap, no advice boilerplate), no speculation presented as advice, 3–5 sentence narrative, `maxOutputTokens` 2500. | `agent.py` |
 | Mastra sidecar (optional) | Node/TS. An `analyst` delegates to the subagents `turnInvestigator` (Haiku, ≤4 `get_turn` per turn) and `sqlAnalyst` (Sonnet, ≤3 `query_db`). The harness has a read-loop guard, a history limiter (100k tokens) and JSONL traces in `$SCORER_HOME/traces`. Its tools are HTTP wrappers over Python `POST /api/tools/<name>`, so Python owns the data and the clipping. Its analyst runs on `claude-sonnet-5-5` (Opus fallback). `scorer serve` proxies `/api/chat` to it when `SCORER_MASTRA_URL/health` answers within 300 ms, and otherwise falls back to Python. | `agent-mastra/src/*`, `scripts/serve_with_mastra.sh` |
-| Dashboard | Stdlib `ThreadingHTTPServer` with no build step, in the Sherpa theme. Tabs: Today / Sessions / Trends / Leverage. Today has the worktree timeline with hover summaries, the narrative, a 4-number band, you-vs-agent split bars, "What you did well", corrections by cause with owner chips, and action items. The Ask-AI sidebar shows steps, subagents, citations, peek and tiles, and becomes a drawer under 1440 px. Judge output carries an "uncalibrated" chip. Lab and temp sessions are hidden. | `serve.py`, `cache.py`, `static/{index.html,app.js,app.css}`, `DESIGN.md` |
-| herdr lab | A scripted multi-agent lab: 3× Claude + 1× Codex in herdr panes, scripted correction / clarification / interrupt / queued / hand-edit / test-asked scenarios, isolated in `~/.scorer-lab`, with ground truth in `lab-actions.log`. Its findings fed the parser fixes in `643a744`. | `scripts/lab/orchestrate.sh` |
-| QA | Mastra harness QA: dummy chat page, tool checks (130/136 at the time), chat quality, and abort. The 11 bugs it found appear fixed in `cc6de95`/`42e0783` (see §5). | `agent-mastra/qa/*`, `agent-mastra/public/index.html` |
+| Dashboard | Stdlib `ThreadingHTTPServer` with no build step, in the Sherpa theme. **Mockup A layout port (`93c8891`):** header card, worktree lanes, two-column cards, diagnostics, action items, chat header; plain metric names (no V/H/B/C letters in the UI); judge v3 episode chips; a demo-data badge when serving a demo DB; the chat panel is ported from the Mastra dummy page. `--db` / `SCORER_DB` picks the DB for serve/report/judge. `/api/attribution` tooling accepts `{count, turn_ids}` buckets (`03d9926`). Tabs: Today / Sessions / Trends / Leverage. Today has the worktree timeline with hover summaries, the narrative, a 4-number band, you-vs-agent split bars, "What you did well", corrections by cause with owner chips, and action items. The Ask-AI sidebar shows steps, subagents, citations, peek and tiles, and becomes a drawer under 1440 px. Judge output carries an "uncalibrated" chip. Lab and temp sessions are hidden. | `serve.py`, `cache.py`, `static/{index.html,app.js,app.css}`, `DESIGN.md` |
+| herdr lab | A scripted multi-agent lab: 3× Claude + 1× Codex in herdr panes, scripted correction / clarification / interrupt / queued / hand-edit / test-asked scenarios, isolated in `~/.scorer-lab`, with ground truth in `lab-actions.log`. Its findings fed the parser fixes in `643a744`. Project sets `LAB_SET=v1|v2` (v2: 4 Claude-only projects with positive episodes), a `compare` subcommand (ground truth vs DB), and a stable-idle wait before each next prompt (`3fcf24a`, `4053428`). `measure` ingests all of `~/scorer-lab`, so earlier runs stay in the lab DB. Run4 is in `~/.scorer-lab/scorer.db`. | `scripts/lab/orchestrate.sh`, `scripts/lab/sets/` |
+| QA | Mastra harness QA: dummy chat page, tool checks (130/136 at the time), chat quality, and abort. The 11 bugs it found are fixed in `cc6de95`/`42e0783` (marked in FINDINGS.md). | `agent-mastra/qa/*`, `agent-mastra/public/index.html` |
 
 ---
 
@@ -103,6 +105,8 @@ scorer measures how well a human drives coding agents (Claude Code and Codex). I
 | `agent-mastra/src/suggest.ts` | Quick-reply tiles | `suggestFollowups()` |
 | `agent-mastra/src/config.ts` | All sidecar env vars | `config`, `clip()` |
 | `agent-mastra/src/harness/` | `read-loop-guard.ts`, `history-limiter.ts`, `trace-exporter.ts` | |
+| `ari-version/` | Ari's Next.js app (teammate). **Do not modify.** | |
+| `demo/` (untracked) | Video/demo assets; `demo/seed/make_demo_db.py` builds `demo/scorer-demo.db` | |
 | `scripts/` | `demo_e2e.sh`, `demo.json`, `capture_hooks.sh`, `redact.py`, `report_fallback.sh`, `serve_with_mastra.sh`, `explore_claude.py` (seed), `lab/orchestrate.sh` | |
 
 **Tests (structure):**
@@ -131,13 +135,15 @@ Raw JSONL is the source of truth. Ingest deletes and reinserts per session, so t
 
 **Metric id catalogue** (day scope unless noted; headline set also at scope `all`):
 - Time: `active_s`, `overlap_s`, `parallel_s`, `turns`, `sessions`, `gap_bucket:<lt30s|30s-2m|2-5m|5-15m|break>`, `gap_median_s`, `switch_share`, `interrupts`, `thrown_s`, `queued_prompts`
-- Scored V: `V`, `V_fail_share`, `V_final`, `V_human`, `V_tier:<verified_pass|verified_fail|inspected|none>`
+- Scored V: `V`, `V_fail_share`, `V_final`, `V_human`, `V_recovered`, `V_tier:<verified_pass|verified_fail|inspected|none>`
 - Scored H: `H` (unit `edits` or `edits(partial)`), `H_repair`, `H_own`
 - Scored B: `B_min`
 - Context / cost: `context_p50`, `context_p90`, `tokens_in`, `tokens_cached`, `tokens_out`, `cost_usd`, `unpriced_calls`, `model_mix:<model>`, `tokens:<model>`, `cost_usd:<model>`
 - Other diagnostics: `subagents`, `compactions`, `tool_calls`, `tool_error_share`, `orientation_s` (session scope plus day median)
 - Tooling: `tooling:<category>:<initiator>`, `tooling:<category>`, `tooling_human_share`
-- Judge (C): `C:event:<event>`, `C:cause:<cause>`, `C:detection:<detection>`, `C_abstain`, `C_source:<api|claude-p|regex|rule>`, `C:defect_caught`, `C:resolved`, `C_labelled`
+- Judge (C): `C:event:<event>`, `C:cause:<cause>`, `C:detection:<detection>`, `C_abstain`, `C_source:<api|claude-p|regex|rule>`, `C:defect_caught`, `C:resolved`, `C_labelled`, `C+:<episode>` (positive episodes, judge v3)
+
+The UI shows plain names for these (no V/H/B/C letters); the ids stay in the DB, report and API.
 
 Judge enums: event = correction / new_requirement / clarification / uncertain / abstain. Detection = human_review / automated_check / agent_self_review / unknown. Action categories = prompt_specificity / verification / context / task_split / tooling / review / other.
 
@@ -145,21 +151,22 @@ Judge enums: event = correction / new_requirement / clarification / uncertain / 
 
 ## 5. What works vs stubbed / known limitations
 
-Works: everything in §2 on real data (77 sessions, 555 turns in `~/.scorer/scorer.db` at handoff), `scorer check` ok, 480 pytest and 23 vitest tests green.
+Works: everything in §2 on real data, `scorer check` ok, pytest green (see §6 for the latest count).
 
 Limitations:
 - **H needs hooks.** Transcripts never set `userModified` reliably. Real hand-edit deltas come only from Stop and SessionStart git snapshots, so sessions without hooks report `edits(partial)`.
 - **Codex hooks need trust.** Codex 0.160 asks the user to approve hooks interactively. They are not installed on this machine, and Codex hook payloads are unverified. Codex is ingested from rollouts only.
 - **The judge is uncalibrated.** The κ ≥ 0.6 check on 50 double-labelled turns has not been done. The dashboard shows an "uncalibrated" chip. Haiku 5.5 rejects non-default temperature, so determinism comes from the schema plus the cache. Report verdict weights are guesses (unverified batch = 5 min, hand repair = 3 min).
-- **Candidate mode is deferred.** Metric E, the traps and the debrief are not built. STATUS.md says the tab is "hidden until calibrated"; `docs/design/decisions.md` says it was "removed".
+- **Candidate tracking is out of the UI for now** (user decision; can be added later). Metric E, the traps and the debrief are not built. STATUS.md and `docs/design/decisions.md` now say the same.
 - **Initiator rules 1 and 4 are not implemented.** Rule 1 (executed by hook → default) and rule 4 (CLAUDE.md/AGENTS.md requests it → default, tagged config) are missing. Only rules 2 (`2:command`), 3 (`3:prompt:<span>`) and 5 (`5`, agent) appear in data.
 - **Permission waits are not timed.** Only accept/reject flags exist, with no `permission_wait` events and no `blocked_on_human` tag.
 - `scorer check` gives a soft WARN: about 11% of Claude turns end by the last entry (interrupted or older turns without `turn_duration`).
 - `--since Nd` filters by file mtime, so resumed sessions bring their whole history.
 - V "fail share" mostly means "verified, then edited again", not failing tests.
 - The judge backend chain only checks the `ANTHROPIC_API_KEY` env var. The Infisical fallback exists only in the Python analyst (`agent.py`).
-- **QA bugs (`agent-mastra/qa/FINDINGS.md`):** all 11 were open on 2026-10-14. Code and tests show fixes in `cc6de95`/`42e0783`: clipping of paths, notes and git, `file_edits_total`, CORS, stats in `finally`, the `agent` field, `group_concat` clipping, prompt wording, local times and citations, sqlAnalyst delegation, and `sql_full` (≤500, behind "show query"). FINDINGS.md was not updated, so re-run `tool_checks.py` to confirm.
-- STATUS.md "Pending" lines (judge action items, Mastra QA fixes, tiles) are stale; they landed in the last three commits.
+- **QA bugs (`agent-mastra/qa/FINDINGS.md`):** all 11 fixed in `cc6de95`/`42e0783` and marked so; a full re-run of `tool_checks.py` / `chat_quality.py` has not been done since.
+- **Open now** (also in STATUS.md): live chat streaming in the ported chat panel is being verified; the turn chip is moving to the batch tier + recovered; the lab DB needs a re-ingest after `f160daf`; zoom on Trends/Sessions, wheel zoom and range filtering are not done.
+- **Demo DB drift.** The judge cache is keyed by model + prompt digest, so after any judge prompt change realign the demo DB: `python demo/seed/make_demo_db.py --from ~/.scorer/scorer.db --out demo/scorer-demo.db`.
 
 ---
 
@@ -193,6 +200,8 @@ uv run scorer report --days 7
 uv run scorer report --day today --no-judge
 SCORER_NO_LLM=1 uv run scorer report --day today   # no narrative / no LLM clustering
 uv run scorer serve --port 8811               # default port 8765 → http://127.0.0.1:8811/
+uv run scorer serve --port 8811 --db demo/scorer-demo.db   # demo DB (demo-data badge); same as SCORER_DB=...
+python demo/seed/make_demo_db.py --from ~/.scorer/scorer.db --out demo/scorer-demo.db   # realign demo DB after judge prompt changes
 ```
 
 **Mastra sidecar:**
@@ -208,7 +217,7 @@ QA scripts and their arguments are listed under "Re-run" in `agent-mastra/qa/FIN
 
 **Tests:**
 ```bash
-uv run pytest -q          # 2026-10-14 (working tree, ~14:50): 480 passed, 1 skipped in 14.53s
+uv run pytest -q          # 2026-10-14 at cc5900f: 541 passed, 1 skipped in 17.2s
 cd agent-mastra && pnpm test   # 2026-10-14 (working tree): 3 files, 23 tests passed
 ```
 
@@ -216,6 +225,8 @@ cd agent-mastra && pnpm test   # 2026-10-14 (working tree): 3 files, 23 tests pa
 ```bash
 scripts/lab/orchestrate.sh setup|launch|drive|measure|teardown|all|reset
 LAB_ROOT=$HOME/scorer-lab/run3 scripts/lab/orchestrate.sh all   # fresh run; report → ~/.scorer-lab/reports/lab.md
+LAB_ROOT=$HOME/scorer-lab/run4 LAB_SET=v2 scripts/lab/orchestrate.sh all   # v2 project set (run4 is in ~/.scorer-lab/scorer.db)
+scripts/lab/orchestrate.sh compare            # ground truth (lab-actions.log) vs measured DB
 ```
 
 **Demo E2E** (real Claude, never touches global settings):
@@ -257,14 +268,14 @@ Environment variables:
 |---|---|---|
 | `SCORER_HOME` | all | store dir (default `~/.scorer`): `events.jsonl`, `scorer.db`, `config.toml`, `reports/`, `logs/`, `judge/`, `traces/` |
 | `SCORER_CWD_PREFIX` | ingest | default `--cwd-prefix` (`:`-separated) |
-| `SCORER_DB` | report, judge, serve (**uncommitted WIP** in `cli.py`) | `--db PATH` exports it so the analyst's connections use the same file |
+| `SCORER_DB` | report, judge, serve (`model.db_path()`) | overrides the DB file; `--db PATH` exports it so the analyst's connections use the same file |
 | `SCORER_MASTRA_URL` | serve | proxy `/api/chat` to the sidecar when `/health` answers within 300 ms |
 | `SCORER_NO_LLM=1` | report, serve, judge clustering | skip narrative, summaries and LLM clustering |
 | `ANTHROPIC_API_KEY` | agent, judge, sidecar | API key. Without it the judge uses `claude -p`, then regex |
 | Infisical fallback | `agent.py` only | if the env key is missing, one `infisical` CLI lookup (5 s, never logged) |
 | `SCORER_ANALYST_MODEL`, `SCORER_FALLBACK_MODEL`, `SCORER_SUGGEST_MODEL`, `SCORER_INVESTIGATOR_MODEL`, `SCORER_SQL_MODEL`, `SCORER_SUGGEST_TIMEOUT_MS`, `SCORER_HISTORY_TOKEN_LIMIT`, `SCORER_URL`, `PORT` | Mastra sidecar only | defaults: sonnet / opus / haiku / haiku / sonnet / 6000 / 100000 / `http://127.0.0.1:8765` / 4111 |
 | `SCORER_PORT`, `MASTRA_PORT` | `serve_with_mastra.sh`, `qa/stack.sh` | ports; `QA_DIR` and `SRC_DB` are for QA |
-| `LAB_ROOT`, `LAB_MODEL`, `SCORER_HOME_LAB` | lab orchestrator | defaults `~/scorer-lab`, `claude-sonnet-5-5`, `~/.scorer-lab` |
+| `LAB_ROOT`, `LAB_MODEL`, `SCORER_HOME_LAB`, `LAB_SET` | lab orchestrator | defaults `~/scorer-lab`, `claude-sonnet-5-5`, `~/.scorer-lab`, `v1` |
 | `SCORER_NO_SCHEDULE`, `SCORER_SCHEDULER`, `SCORER_LAUNCHCTL`, `SCORER_CRONTAB`, `SCORER_LAUNCHAGENTS_DIR` | install (test seams) | skip or redirect the scheduler |
 
 ---
@@ -274,9 +285,9 @@ Environment variables:
 - **Claude hooks are installed globally (since 2026-10-14).** `~/.claude/settings.json` has one scorer group for each of the 5 events. The pre-install backup is `~/.claude/settings.json.bak`.
 - **Codex hooks are not installed.** `~/.codex/hooks.json` exists with 0 scorer entries.
 - **launchd** `com.scorer.daily` (`~/Library/LaunchAgents/com.scorer.daily.plist`, backup `.plist.bak`) is loaded and runs at **18:00 local**: `ingest --since 2d && report --day today > ~/.scorer/reports/<date>.md`. Logs go to `~/.scorer/logs/daily.{out,err}.log`. It had not run yet at handoff, so `~/.scorer/reports/` does not exist.
-- **`~/.scorer`** holds `events.jsonl`, `scorer.db` (77 sessions / 555 turns / 141 judge labels), `config.toml` (all defaults commented out), `judge/` and `logs/`.
-- **`~/.scorer-lab`** holds the lab store (`scorer.db`, `events.jsonl`, `lab-actions.log`, `lab-state.env`, `reports/lab.md`, `run1-aborted/`). Lab projects are in `~/scorer-lab/` (`run2/` plus `lab-*` dirs).
-- **Servers running at handoff:**
+- **`~/.scorer`** holds `events.jsonl`, `scorer.db`, `config.toml` (all defaults commented out), `judge/` and `logs/`.
+- **`~/.scorer-lab`** holds the lab store (`scorer.db`, `events.jsonl`, `lab-actions.log`, `lab-state.env`, `reports/lab.md`, `run1-aborted/`). Lab projects are in `~/scorer-lab/` (`run2/`, `run4/` plus `lab-*` dirs). The lab DB holds run4 but was ingested before `f160daf`, so re-ingest it.
+- **Servers** (check with `lsof -i :8811` etc.; the list below is from the first handoff and may be stale):
   - `:8811` is `scorer serve --port 8811` on `~/.scorer/scorer.db`, with the **Python** chat backend (no Mastra).
   - `:4190` (sidecar), `:8790` (mastra-backed) and `:8791` (python-backed) are the **QA stack** (`agent-mastra/qa/stack.sh`) on `/tmp/scorer-qa/scorer.db`, not the live DB.
   - Stop them with `agent-mastra/qa/stack.sh stop` and by killing the `scorer serve --port 8811` process.
@@ -304,7 +315,7 @@ Before the demo:
    - Note: the demo repo lives in a temp dir, which ingest excludes by default. To see that turn, ingest it into a separate store: `SCORER_HOME=/tmp/scorer-demo uv run scorer ingest --include-lab`.
 3. **(60 s) Report.** Run `uv run scorer report --day today`. Walk through the verdict, tomorrow's change, corrections by cause, unverified-now, the worst attention window, the pattern to repeat, the baseline table, "What you did well" and the action items.
 4. **(90 s) Dashboard** at http://127.0.0.1:8811/:
-   - Today: narrative, 4 numbers, worktree timeline hover, you-vs-agent bars, the uncalibrated chip.
+   - Today: header card, narrative, worktree lanes with hover, you-vs-agent bars, episode chips, action items, the uncalibrated chip. For a stable demo use `--db demo/scorer-demo.db` (demo-data badge).
    - Sessions: open a row, then a turn.
    - Trends.
    - Leverage.
@@ -319,8 +330,8 @@ Before the demo:
 1. **Calibrate the judge.** Double-label 50 real turns, compute κ against the 0.6 target, then tune the prompt. After that, drop the "uncalibrated" chip and revisit the report verdict weights.
 2. **Implement initiator rules 1 and 4.** Rule 1 marks hook-executed actions as `default`. Rule 4 hashes CLAUDE.md/AGENTS.md at SessionStart and marks matching requests `default` with the tag `config:user|repo`. This affects V_human and the tooling split.
 3. **Codex hooks.** Approve trust, then capture real payloads (`scripts/capture_hooks.sh`) and verify Stop snapshots and H for Codex.
-4. **Re-run Mastra QA** (`tool_checks.py`, `chat_quality.py`), then update `agent-mastra/qa/FINDINGS.md` and the "Pending" lines in `STATUS.md`.
+4. **Finish the open items in STATUS.md** (chat streaming verification, turn chip on batch tier + recovered, lab re-ingest, Trends/Sessions zoom), then re-run Mastra QA (`tool_checks.py`, `chat_quality.py`).
 5. **Watch the first launchd run** (18:00) in `~/.scorer/logs/daily.err.log` and check that `~/.scorer/reports/<date>.md` gets written.
 6. **Permission waits.** Time accept/reject waits inside turns (`blocked_on_human`) and fold them into B.
-7. **Candidate mode** (deferred): metric E, the three traps, off-box collection and the legal minimums (spec §1). Build it only after calibration.
+7. **Candidate tracking** (out of the UI for now, can be added later): metric E, the three traps, off-box collection and the legal minimums (spec §1). Build it only after calibration.
 8. **Cleanup.** `pyproject.toml` lists `anthropic` both as a core dependency and as the `judge` extra. Old fonts are kept only for `test_serve.py`.

@@ -9,17 +9,19 @@ Data: `.backup` copy of ~/.scorer/scorer.db (run 2: 83 sessions, 545 turns). No 
 - Abort: trace shows `aborted` within ~1 s; /health ok.
 
 ## Bugs
-1. **Med · agent.py `_SENSITIVE`/`_guarded`** — `metric_evidence.note` (paths, up to 110 chars), `session.cwd`/`repo` (87), `session.branch`, `git_change.files/author` not clipped to 80 (only the 200 cap).
-2. **Low-Med · translate.ts `translate` + agent.py `_loop`** — text written before a tool call is concatenated into the answer without a break ("…days.Your…").
-3. **Low · agent.py `_get_turn`** — `file_edits` silently cut to 40, no total.
-4. **Low · server.ts `makeServer`** — no CORS / OPTIONS (same-origin only).
-5. **Low · chat.ts `runChat`** — stats line missing on some aborts (`opts.stats` not in `finally`).
-6. **Low · translate.ts** — thinking-step `agent` field dropped; nesting by event window only.
-7. **Info · serve.py `sanitize_event`** — tool-start SQL clipped to 80 → not auditable/replayable via /api/chat.
-8. **Info · agent.py `_query_db`** — `group_concat(prompt_text)` yields 200-char cells of clipped fragments (no leak, but breaks the "no string > 80" rule).
-9. **Low (quality) · system prompt** — analyst claims the DB "only stores 80 chars" (false; tools clip).
-10. **Low (quality) · `_list_sessions`** — UTC timestamps (answers quote UTC); no citations.
-11. **Info (quality) · agents.ts `DELEGATION_SECTION`** — quantitative questions don't delegate to sqlAnalyst unless asked.
+All 11 fixed in `cc6de95`/`42e0783` (checked in code 2026-10-14); a full QA re-run has not been done since.
+
+1. ~~**Med · agent.py `_SENSITIVE`/`_guarded`** — `metric_evidence.note` (paths, up to 110 chars), `session.cwd`/`repo` (87), `session.branch`, `git_change.files/author` not clipped to 80 (only the 200 cap).~~ **Fixed** in `cc6de95`/`42e0783` (`_SENSITIVE` covers note/cwd/repo/branch/files/author, clipped to 80 via views).
+2. ~~**Low-Med · translate.ts `translate` + agent.py `_loop`** — text written before a tool call is concatenated into the answer without a break ("…days.Your…").~~ **Fixed** in `cc6de95`/`42e0783` (step separator in translate.ts and held pre-tool text in agent.py `_loop`).
+3. ~~**Low · agent.py `_get_turn`** — `file_edits` silently cut to 40, no total.~~ **Fixed** in `cc6de95`/`42e0783` (`file_edits_total` returned).
+4. ~~**Low · server.ts `makeServer`** — no CORS / OPTIONS (same-origin only).~~ **Fixed** in `cc6de95`/`42e0783` (loopback-only CORS + OPTIONS in server.ts).
+5. ~~**Low · chat.ts `runChat`** — stats line missing on some aborts (`opts.stats` not in `finally`).~~ **Fixed** in `cc6de95`/`42e0783` (`opts.stats` in `finally`).
+6. ~~**Low · translate.ts** — thinking-step `agent` field dropped; nesting by event window only.~~ **Fixed** in `cc6de95`/`42e0783` (`agent` / `subagent_id` on tool events).
+7. ~~**Info · serve.py `sanitize_event`** — tool-start SQL clipped to 80 → not auditable/replayable via /api/chat.~~ **Fixed** in `cc6de95`/`42e0783` (`sql_full` (≤500) behind "show query").
+8. ~~**Info · agent.py `_query_db`** — `group_concat(prompt_text)` yields 200-char cells of clipped fragments (no leak, but breaks the "no string > 80" rule).~~ **Fixed** in `cc6de95`/`42e0783` (any result touching a sensitive column has every string cell clipped to 80).
+9. ~~**Low (quality) · system prompt** — analyst claims the DB "only stores 80 chars" (false; tools clip).~~ **Fixed** in `cc6de95`/`42e0783` (prompt says the DB stores full text and tools clip).
+10. ~~**Low (quality) · `_list_sessions`** — UTC timestamps (answers quote UTC); no citations.~~ **Fixed** in `cc6de95`/`42e0783` (local times with offset, citations on each session's first turn).
+11. ~~**Info (quality) · agents.ts `DELEGATION_SECTION`** — quantitative questions don't delegate to sqlAnalyst unless asked.~~ **Fixed** in `cc6de95`/`42e0783` (delegation section sends quantitative questions to sqlAnalyst).
 
 ## Re-run
 ```

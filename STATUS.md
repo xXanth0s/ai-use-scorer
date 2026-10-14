@@ -38,6 +38,16 @@ Claude hooks in ~/.claude/settings.json (one scorer group per event, backup sett
 Mastra sidecar analyst model: claude-sonnet-5-5 (Opus fallback); Python analyst stays on config analyst_model (Opus).
 
 ## Dashboard (done; review round 1 applied)
-`uv run scorer serve --port 8811` → tabs Today · Sessions · Trends · Leverage (Candidate hidden until calibrated). Sherpa colors (warm background, white cards), worktree timeline with analyst hover summaries, analyst narrative (cached), Ask-AI sidebar (steps, subagents, citations, peek, quick-reply tiles), chat becomes a drawer < 1440 px. Verdict = `report.facts()` (single source with `scorer report`). Judge labels carry an "uncalibrated" chip. Lab/scratch/temp sessions excluded at ingest by default (`--include-lab` to opt in).
-Pending: judge action items (bottom of Today + report), Mastra QA fixes + Sonnet analyst + tiles in the test page.
+`uv run scorer serve --port 8811` → tabs Today · Sessions · Trends · Leverage. Candidate tracking is out of the UI for now (user decision); it can be added later. Sherpa colors (warm background, white cards), worktree timeline with analyst hover summaries, analyst narrative (cached), Ask-AI sidebar (steps, subagents, citations, peek, quick-reply tiles), chat becomes a drawer < 1440 px. Verdict = `report.facts()` (single source with `scorer report`). Judge labels carry an "uncalibrated" chip. Lab/scratch/temp sessions excluded at ingest by default (`--include-lab` to opt in).
 Demo: `uv run scorer ingest && uv run scorer judge --day today && uv run scorer serve --port 8811` → open http://127.0.0.1:8811/.
+
+## Since then (landed 2026-10-14)
+Judge v3 positive episodes + `C+:<episode>` metrics + report line 6 (`edbf5d0`) · concise analyst answers, no-speculation rule, maxOutputTokens 2500 (`53f4a94`) · dashboard mockup A layout port, plain metric names, episode chips, demo-data badge, chat ported from the Mastra dummy page, `SCORER_DB` / `--db` (`93c8891`) · attribution rules, definition v2, `V_recovered` (`f160daf`) · lab `LAB_SET=v1|v2`, `compare`, stable-idle wait; run4 in `~/.scorer-lab/scorer.db` (`3fcf24a`, `4053428`) · merged origin/main with Ari's `ari-version/` (never modify it) (`9514601`) · `/api/attribution` tooling bucket fix (`03d9926`). Mastra QA findings: all 11 fixed (`cc6de95`/`42e0783`).
+
+## Pending (open now)
+- Live chat streaming in the ported chat panel: being verified.
+- Turn chip: moving to the batch tier + recovered.
+- Lab DB (`~/.scorer-lab/scorer.db`) needs a re-ingest after `f160daf`.
+- Codex hooks still need manual trust approval in Codex.
+- Zoom on Trends/Sessions, wheel zoom and range filtering: not done.
+- Demo DB: after any judge prompt change, realign with `python demo/seed/make_demo_db.py --from ~/.scorer/scorer.db --out demo/scorer-demo.db` (the judge cache is keyed by model + prompt digest).
