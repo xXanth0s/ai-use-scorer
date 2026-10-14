@@ -17,7 +17,7 @@
 #   setup records the set in $LAB_ROOT/.lab-set, so later phases pick it up from LAB_ROOT alone.
 #   e.g. LAB_ROOT=$HOME/scorer-lab/run4 LAB_SET=v2 scripts/lab/orchestrate.sh all
 # Re-run in a fresh root (keeps earlier runs):  LAB_ROOT=$HOME/scorer-lab/run3 scripts/lab/orchestrate.sh all
-# (the reported lab used LAB_ROOT=$HOME/scorer-lab/run2; measure filters --cwd-prefix "$LAB_ROOT").
+# (measure ingests all of ~/scorer-lab (LAB_INGEST_PREFIX) so earlier runs stay in the DB; compare filters to $LAB_ROOT).
 # Isolation: SCORER_HOME=~/.scorer-lab, hooks only in <proj>/.claude/settings.local.json. Nothing global.
 # Ground truth for expected-vs-measured: ~/.scorer-lab/lab-actions.log (one line per orchestrator action).
 set -uo pipefail
@@ -145,7 +145,7 @@ P() {  # <agent> <category> <text>   send a prompt (no wait); remember the lifec
   log "prompt $1 $2 :: ${3:0:70}"
 }
 W() {  # <agent> [timeout_s]  wait until the agent settled AFTER the last P (seq moved on, status idle/done)
-  local a="$1" t="${2:-420}" s0 st seq vis n=0 start=$SECONDS
+  local a="$1" t="${2:-420}" s0 st seq seq2 vis n=0 start=$SECONDS
   s0="$(cat "$SCORER_HOME/.seq_$a" 2>/dev/null || echo 0)"
   while [ $((SECONDS-start)) -lt "$t" ]; do
     read -r st seq <<<"$(aget "$a")"
@@ -157,7 +157,13 @@ W() {  # <agent> [timeout_s]  wait until the agent settled AFTER the last P (seq
       fi
       log "blocked $a (not a permission prompt) -> leaving it"; return 1
     fi
-    if [ "${seq:-0}" -gt "$s0" ] && { [ "$st" = idle ] || [ "$st" = done ]; }; then log "settled $a"; return 0; fi
+    # settled = idle/done on two polls in a row: right after a permission approval or a dequeued
+    # prompt the agent can flash idle for a moment, and a prompt sent then gets lost (run4 lab-mdl)
+    if [ "${seq:-0}" -gt "$s0" ] && { [ "$st" = idle ] || [ "$st" = done ]; }; then
+      sleep 4; read -r st seq2 <<<"$(aget "$a")"
+      if [ "$seq2" = "$seq" ] && { [ "$st" = idle ] || [ "$st" = done ]; }; then log "settled $a"; return 0; fi
+      continue
+    fi
     sleep 3
   done
   log "timeout $a status=$st"; return 1
@@ -206,7 +212,10 @@ cmd_teardown() {
 }
 
 cmd_measure() {
-  "${SC[@]}" ingest --since 1d --cwd-prefix "$LAB" && "${SC[@]}" check
+  # ingest every lab run (not just $LAB): scorer purges lab-path sessions outside the given prefixes,
+  # so a run-only prefix would delete earlier runs from the lab DB. compare still filters to $LAB.
+  "${SC[@]}" ingest --since "${LAB_SINCE:-7d}" --cwd-prefix "${LAB_INGEST_PREFIX:-$HOME/scorer-lab}" --cwd-prefix "$LAB" \
+    && "${SC[@]}" check
   "${SC[@]}" report --day today > "$SCORER_HOME/reports/lab.md" && log "report -> $SCORER_HOME/reports/lab.md"
   cmd_compare
   echo "PHASE DONE measure"
