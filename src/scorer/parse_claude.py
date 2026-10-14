@@ -175,6 +175,7 @@ class _T:
         self.last_act: datetime | None = None      # assistant / tool_result
         self.td: list[datetime] = []
         self.interrupt_at: datetime | None = None
+        self.prompt_id: str | None = None          # user entry promptId == hook payload prompt_id
         self.last_uuid: str | None = None
         self.dangling_last = False                 # last activity = tool_use w/o result
         self.side_ts: list[datetime] = []          # subagent activity inside the turn's window
@@ -434,6 +435,7 @@ class _Parser:
                     turn = Turn(idx=len(self.ts_list), prompt_at=iso(prompt_at), prompt_text=_text(e),
                                 prompt_kind=kind, first_uuid=u, last_uuid=u, enqueued_at=iso(enq))
                     cur = _T(turn, prompt_at)
+                    cur.prompt_id = e.get("promptId")
                     self.ts_list.append(cur)
                     b.turns.append(turn)
                     last_act_kind = None
@@ -490,6 +492,7 @@ class _Parser:
             and any(not tc.has_result and tc.turn_idx == len(self.ts_list) - 1 and tc.sidechain_id is None
                     for tc in self.tools.values()))
         self._subagents(path)
+        self._match_hooks()
         self._finish_turns()
         self._hooks()
         self._emit()
@@ -567,8 +570,11 @@ class _Parser:
             if tt.interrupt_at is not None:
                 turn.agent_finished_at, turn.end_source = iso(tt.interrupt_at), "interrupt"
                 continue
-            stops = [p for p in (parse_ts(h.get("at")) for h in self.hooks if h.get("event") == "Stop") if p
-                     and p >= tt.at and (nxt is None or p < nxt)]
+            # Stop hooks matched by prompt_id (exact) else by time window; a Stop long after the
+            # turn's last agent entry belongs to a detached rerun and is ignored
+            stops = [at for h, at, k in self.hook_turns if k == i and h.get("event") == "Stop"
+                     and at >= tt.at and (nxt is None or at < nxt)
+                     and (tt.last_act is None or at - tt.last_act <= BREAK)]
             if stops:
                 end, src = max(stops), "stop_hook"
             elif tt.td:
@@ -592,18 +598,32 @@ class _Parser:
             turn.agent_finished_at, turn.end_source = iso(max(end, tt.at)), src
 
     # ---- hook events ----
-    def _hooks(self) -> None:
+    def _match_hooks(self) -> None:
+        """hook line {at, agent, event, payload{session_id, prompt_id, …}, git?} -> (line, at, turn_idx)."""
+        by_pid = {tt.prompt_id: i for i, tt in enumerate(self.ts_list) if tt.prompt_id}
+        self.hook_turns = []
         for h in self.hooks:
             at = parse_ts(h.get("at"))
             if at is None:
                 continue
-            tidx = self._turn_at(at)
-            data = {"event": h.get("event")}
-            if h.get("git") is not None:
-                data["git"] = h.get("git")
+            p = h.get("payload") if isinstance(h.get("payload"), dict) else {}
+            k = by_pid.get(p.get("prompt_id"))
+            self.hook_turns.append((h, at, k if k is not None else self._turn_at(at)))
+
+    def _hooks(self) -> None:
+        # git lives only on git_snapshot (taken at Stop); hook rows carry no paths, so metrics
+        # never count the same working-tree state twice
+        for h, at, tidx in self.hook_turns:
+            git = h.get("git") if isinstance(h.get("git"), dict) else None
+            p = h.get("payload") if isinstance(h.get("payload"), dict) else {}
+            data = {"event": h.get("event"), "has_git": git is not None}
+            if p.get("prompt_id"):
+                data["prompt_id"] = p.get("prompt_id")
+            if p.get("tool_use_id"):
+                data["tool_use_id"] = p.get("tool_use_id")
             self.b.events.append(Event("hook", iso(at), tidx, data))
-            if h.get("event") == "Stop" and h.get("git") is not None:
-                self.b.events.append(Event("git_snapshot", iso(at), tidx, {"git": h.get("git")}))
+            if h.get("event") == "Stop" and git is not None:
+                self.b.events.append(Event("git_snapshot", iso(at), tidx, {"git": git}))
 
     # ---- api calls / tool calls / edits into the bundle ----
     def _emit(self) -> None:

@@ -170,3 +170,62 @@ def test_detached_run_does_not_stretch_turn(tmp_path):
     t = b.turns[0]
     assert t.end_source == "turn_duration" and t.agent_finished_at.startswith("2026-10-01T08:00:06")
     assert "req_late" in {a.request_id for a in b.api_calls}
+
+
+def test_hookio_stop_line_through_ingest(tmp_path, scorer_home):
+    """A Stop line written by the real `scorer event` hook ends the turn (stop_hook) and its git
+    snapshot attaches to that turn, matched via payload.prompt_id."""
+    from datetime import datetime, timedelta, timezone
+
+    from scorer.db import connect
+    from scorer.ingest import run_ingest
+    from scorer.model import events_path
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.email=t@x", "-c", "user.name=t"]
+    (repo / "hello.py").write_text("print('hello')\n")
+    subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["add", "hello.py"], check=True)
+    subprocess.run(git + ["commit", "-qm", "init"], check=True)
+    (repo / "hello.py").write_text("print('hello')\nassert False\n")
+
+    sid, pid = "abcdabcd-0000-0000-0000-000000000001", "pid-0001"
+    now = datetime.now(timezone.utc)
+    ts = lambda s: (now - timedelta(seconds=s)).isoformat().replace("+00:00", "Z")  # noqa: E731
+    rows = [
+        {"type": "user", "uuid": "u1", "timestamp": ts(60), "sessionId": sid, "cwd": str(repo), "promptId": pid,
+         "promptSource": "typed", "message": {"role": "user", "content": "add a failing test to hello.py"}},
+        {"type": "assistant", "uuid": "u2", "timestamp": ts(55), "sessionId": sid, "requestId": "r1",
+         "message": {"model": "claude-opus-5-5", "usage": {"output_tokens": 3},
+                     "content": [{"type": "tool_use", "id": "t1", "name": "Bash",
+                                  "input": {"command": "cat >> hello.py <<'EOF'\nassert False\nEOF"}}]}},
+        {"type": "user", "uuid": "u3", "timestamp": ts(54), "sessionId": sid, "promptId": pid,
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": ""}]}},
+        {"type": "assistant", "uuid": "u4", "timestamp": ts(50), "sessionId": sid, "requestId": "r2",
+         "message": {"model": "claude-opus-5-5", "usage": {"output_tokens": 3},
+                     "content": [{"type": "text", "text": "done"}]}},
+        {"type": "system", "subtype": "turn_duration", "uuid": "u5", "timestamp": ts(49), "sessionId": sid,
+         "durationMs": 11000},
+    ]
+    proj = tmp_path / "projects" / "-tmp-repo"
+    proj.mkdir(parents=True)
+    (proj / f"{sid}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    payload = {"session_id": sid, "prompt_id": pid, "transcript_path": str(proj / f"{sid}.jsonl"),
+               "cwd": str(repo), "hook_event_name": "Stop", "stop_hook_active": False}
+    r = subprocess.run([sys.executable, "-m", "scorer", "event", "--agent", "claude", "--event", "Stop"],
+                       input=json.dumps(payload), capture_output=True, text=True,
+                       env={**os.environ, "SCORER_HOME": str(scorer_home)})
+    assert r.returncode == 0 and r.stdout == ""
+    line = json.loads(events_path().read_text().splitlines()[-1])
+    assert line["event"] == "Stop" and line["payload"]["prompt_id"] == pid and "hello.py" in line["git"]["changed_paths"]
+
+    conn = connect(tmp_path / "t.db")
+    run_ingest(conn, since_days=1, claude_root=str(tmp_path / "projects"), codex_root=str(tmp_path / "none"),
+               events_file=str(events_path()))
+    t = conn.execute("SELECT id, end_source, agent_finished_at FROM turn WHERE session_id=?", (sid,)).fetchone()
+    assert t["end_source"] == "stop_hook"
+    assert t["agent_finished_at"] == line["at"]
+    snap = conn.execute("SELECT turn_id, data FROM event WHERE kind='git_snapshot' AND session_id=?", (sid,)).fetchone()
+    assert snap["turn_id"] == t["id"] and "hello.py" in json.loads(snap["data"])["git"]["changed_paths"]

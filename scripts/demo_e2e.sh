@@ -11,6 +11,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETTINGS="$ROOT/scripts/demo.json"
 PROMPT="${PROMPT:-say hi}"
+# ALLOWED_TOOLS overrides the --allowedTools list (default lets the agent edit files and run pytest)
 export SCORER_HOME="${SCORER_HOME:-$(mktemp -d -t scorer-home)}"
 EV="$SCORER_HOME/events.jsonl"
 FAIL=0
@@ -29,7 +30,7 @@ HEAD_SHA="$(git -C "$REPO" rev-parse HEAD)"
 echo "repo=$REPO SCORER_HOME=$SCORER_HOME"
 T0=$(python3 -c 'import time;print(time.time())')
 REPLY="$(cd "$REPO" && env -u SUPERSET_HOME_DIR claude -p "$PROMPT" --settings "$SETTINGS" \
-          --allowedTools "Bash(ls)" 2>/dev/null)"
+          --allowedTools ${ALLOWED_TOOLS:-Edit Write "Bash(ls)" "Bash(pytest*)" "Bash(python*)"} 2>/dev/null)"
 RC=$?
 T1=$(python3 -c 'import time;print(time.time())')
 printf 'claude exit=%s wall=%.1fs reply(clipped)=%s\n' "$RC" "$(python3 -c "print($T1-$T0)")" \
