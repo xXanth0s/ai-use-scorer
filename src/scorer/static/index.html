@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scorer</title>
+<!-- Minimal endpoint proof. Final visual design comes from the mockup round; tokens follow DESIGN.md. -->
+<style>
+@font-face{font-family:"Hanken Grotesk";src:url(fonts/HankenGrotesk-var-latin.woff2) format("woff2");font-weight:400 800;font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url(fonts/JetBrainsMono-var-latin.woff2) format("woff2");font-weight:400 700;font-display:swap}
+:root{--surface:#F5F6F3;--raised:#FFF;--text:#15181C;--muted:#566070;--rule:#D5D9D2;--focus:#2F55D4;
+--claude:#B8740F;--codex:#1D6A8A;--ok:#2D7A46;--warn:#9A6200;--err:#B3261E;
+--sans:"Hanken Grotesk",ui-sans-serif,system-ui,sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--surface:#121417;--raised:#1A1D21;--text:#ECEDEA;--muted:#A0A7B1;--rule:#2E333A;--focus:#86A4FF;--claude:#E3A54A;--codex:#5BB4DA;--ok:#62C383;--warn:#E5B556;--err:#F26B5E}}
+:root[data-theme=dark]{--surface:#121417;--raised:#1A1D21;--text:#ECEDEA;--muted:#A0A7B1;--rule:#2E333A;--focus:#86A4FF;--claude:#E3A54A;--codex:#5BB4DA;--ok:#62C383;--warn:#E5B556;--err:#F26B5E}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface);color:var(--text);font:400 1.0625rem/1.5 var(--sans)}
+main{max-width:1440px;margin:0 auto;padding:16px 24px 64px}
+header{display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--rule);padding-bottom:12px}
+header .mark{font-weight:800;font-size:1.25rem;margin-right:auto}
+select,button{font:600 .875rem var(--sans);background:var(--raised);color:var(--text);border:1px solid var(--rule);border-radius:3px;padding:6px 10px}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+h2{font-size:1.375rem;margin:40px 0 12px;padding-top:12px;border-top:1px solid var(--rule)}
+.verdict{font-size:clamp(1.75rem,1.2rem + 1.6vw,2.5rem);font-weight:700;line-height:1.15;margin:28px 0 8px}
+.change{font-size:1.25rem;margin:0;color:var(--muted)}
+.mono,td.n{font-family:var(--mono);font-feature-settings:"tnum"}
+svg text{font:500 13px var(--mono);fill:var(--muted)}
+svg .lbl{font:600 14px var(--sans);fill:var(--text)}
+svg rect.bar{cursor:pointer}
+svg rect.bar.sel{stroke:var(--text);stroke-width:2}
+.band{display:grid;grid-template-columns:7fr 5fr;gap:32px}
+@media (max-width:960px){.band{grid-template-columns:1fr}}
+table{border-collapse:collapse;width:100%}
+td,th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-weight:600;font-size:.875rem;color:var(--muted)}
+td.n{text-align:right}
+.glyph{font:700 2rem/1 var(--mono);width:3rem}
+a{color:var(--text)}
+#detail{background:var(--raised);border:1px solid var(--rule);border-radius:6px;padding:16px;position:sticky;top:16px}
+.tier-verified_pass{color:var(--ok)}.tier-verified_fail{color:var(--err)}.tier-none{color:var(--warn)}
+.muted{color:var(--muted)}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:32px}
+@media (max-width:1200px){.layout{grid-template-columns:1fr}}
+#chat{border-left:1px solid var(--rule);padding-left:24px;display:flex;flex-direction:column;gap:10px;max-height:calc(100vh - 32px);position:sticky;top:16px}
+#log{overflow:auto;display:flex;flex-direction:column;gap:10px;flex:1}
+.ub{align-self:flex-end;max-width:85%;background:color-mix(in srgb,var(--text) 9%,var(--surface));border-radius:6px;padding:8px 12px}
+.tc{border:1px solid var(--rule);border-radius:3px;padding:6px 8px;font:500 .875rem var(--mono);color:var(--muted)}
+.pill{font:600 .8125rem var(--mono);background:color-mix(in srgb,var(--focus) 15%,transparent);border-radius:9999px;padding:0 6px;text-decoration:none}
+#composer{display:flex;gap:8px}#composer textarea{flex:1;font:inherit;background:var(--raised);color:var(--text);border:1px solid var(--muted);border-radius:6px;padding:8px}
+</style>
+</head>
+<body>
+<main>
+<header><span class="mark">scorer</span>
+  <button id="prev" type="button" aria-label="Previous day">‹</button>
+  <select id="day" aria-label="Day"></select>
+  <button id="next" type="button" aria-label="Next day">›</button>
+  <button id="theme" type="button">Theme</button>
+</header>
+<div class="layout"><div>
+<p class="verdict" id="where">Loading…</p>
+<p class="change" id="change"></p>
+
+<h2>Day timeline</h2>
+<div id="timeline"></div>
+
+<div class="band">
+  <section><h2>Scored</h2><table id="scored"></table></section>
+  <section><h2>Turn</h2><div id="detail" class="muted">Pick a bar or an evidence link.</div></section>
+</div>
+
+<h2>Leverage <span class="muted" style="font-size:.875rem;font-weight:600">not scored</span></h2>
+<table id="leverage"></table>
+
+<h2>Diagnostics</h2>
+<table id="diag"></table>
+
+<h2>Last 7 days</h2>
+<table id="trend"></table>
+</div>
+<aside id="chat" aria-label="Analyst chat"><h2 style="margin-top:0">Ask about this day</h2>
+  <div id="log"><p class="muted" id="chatstate">Checking analyst…</p></div>
+  <form id="composer"><textarea id="q" rows="2" placeholder="Why is my verification rate low?"></textarea><button id="ask">Ask</button></form>
+</aside></div>
+</main>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const dash = "—";
+const fmt = (v, unit) => {
+  if (v === null || v === undefined) return dash;
+  if (unit === "share") return Math.round(v * 100) + "%";
+  if (unit === "s") return v >= 3600 ? (v / 3600).toFixed(1) + " h" : Math.round(v / 60) + " min";
+  if (unit === "usd") return "$" + v.toFixed(2);
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+};
+const hm = iso => new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+const NAMES = {V: "Verification after changes", V_fail_share: "Verifications that failed", V_final: "Final state verified",
+  V_human: "Verification you asked for", H: "Hand-edits outside the agent", B_min: "Blocked-agent minutes"};
+const theme = new URLSearchParams(location.search).get("theme");
+if (theme) document.documentElement.dataset.theme = theme;
+$("#theme").onclick = () => { const r = document.documentElement;
+  r.dataset.theme = (r.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark" ? "light" : "dark"; };
+
+async function api(p) { const r = await fetch(p); if (!r.ok) throw new Error(p + " " + r.status); return r.json(); }
+
+function evLinks(ev) {
+  return (ev || []).slice(0, 6).map(e => `<a href="#turn-${e.turn_id}" title="${esc(e.note)}">turn #${e.turn_id}</a>`).join(" ");
+}
+
+function renderTimeline(d) {
+  const W = Math.max(640, $("#timeline").clientWidth), L = 200, lane = 34, top = 28;
+  const ts = d.sessions.flatMap(s => s.turns.flatMap(t => [Date.parse(t.start), Date.parse(t.end)]));
+  if (!ts.length) { $("#timeline").innerHTML = '<p class="muted">No sessions on this day.</p>'; return; }
+  const t0 = Math.min(...ts) - 15 * 60e3, t1 = Math.max(...ts) + 15 * 60e3;
+  const x = t => L + (W - L - 8) * (t - t0) / (t1 - t0);
+  const H = top + lane * d.sessions.length + 8;
+  let g = `<svg width="${W}" height="${H}" role="img" aria-label="Agent-active intervals per session">
+    <defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+    <rect width="6" height="6" fill="var(--codex)"/><rect width="2" height="6" fill="rgb(255 255 255 / .3)"/></pattern></defs>`;
+  for (let h = Math.ceil(t0 / 3600e3) * 3600e3; h < t1; h += 3600e3)
+    g += `<line x1="${x(h)}" x2="${x(h)}" y1="18" y2="${H}" stroke="var(--rule)"/><text x="${x(h) + 3}" y="14">${hm(new Date(h).toISOString())}</text>`;
+  for (const o of d.overlap) g += `<rect x="${x(Date.parse(o.start))}" y="20" width="${Math.max(1, x(Date.parse(o.end)) - x(Date.parse(o.start)))}" height="5" fill="var(--text)"><title>overlap</title></rect>`;
+  d.sessions.forEach((s, i) => {
+    const y = top + i * lane;
+    g += `<text class="lbl" x="0" y="${y + 17}">${esc(s.agent)} · ${esc(s.repo || s.short)}</text>`;
+    for (const t of s.turns) {
+      const fill = s.agent === "codex" ? "url(#hatch)" : "var(--claude)";
+      g += `<rect class="bar" data-turn="${t.id}" x="${x(Date.parse(t.start))}" y="${y + 4}" rx="3" height="20"
+        width="${Math.max(2, x(Date.parse(t.end)) - x(Date.parse(t.start)))}" fill="${fill}" opacity="${t.open ? .55 : 1}">
+        <title>turn #${t.id} ${hm(t.start)}–${hm(t.end)}${t.open ? " (no finish)" : ""}</title></rect>`;
+    }
+    for (const it of s.interrupts) g += `<rect x="${x(Date.parse(it.at)) - 1}" y="${y}" width="3" height="28" fill="var(--err)"><title>interrupt</title></rect>`;
+  });
+  for (const gp of d.gaps.filter(g => g.bucket === "break")) {
+    const i = d.sessions.findIndex(s => s.id === gp.session_id), y = top + i * lane;
+    const mx = (x(Date.parse(gp.start)) + x(Date.parse(gp.end))) / 2;
+    g += `<text x="${mx}" y="${y + 18}" text-anchor="middle">${Math.round(gp.seconds / 60)} min</text>`;
+  }
+  $("#timeline").innerHTML = g + "</svg>";
+  $("#timeline").querySelectorAll("rect.bar").forEach(r => r.onclick = () => location.hash = "turn-" + r.dataset.turn);
+}
+
+function renderScored(s) {
+  let h = "";
+  for (const k of ["V", "V_fail_share", "V_final", "V_human", "H", "B_min"]) {
+    const m = s[k];
+    h += `<tr><td class="glyph">${k[0]}</td><td><strong>${NAMES[k]}</strong><br>${m ? evLinks(m.evidence) : '<span class="muted">not computed</span>'}</td><td class="n">${m ? fmt(m.value, m.unit) : dash}</td></tr>`;
+  }
+  const c = s.C || [];
+  h += `<tr><td class="glyph">C</td><td><strong>Correction episodes</strong><br>${c.length ? c.map(x => `${esc(x.label)}: ${fmt(x.value, x.unit)} ${evLinks(x.evidence)}`).join("<br>") : '<span class="muted">judge pending</span>'}</td><td class="n">${c.length ? c.reduce((a, x) => a + (x.value || 0), 0) : dash}</td></tr>`;
+  $("#scored").innerHTML = h;
+}
+
+function renderLeverage(l) {
+  const c = l.tooling.categories, cell = v => `<td class="n">${fmt(v)}</td>`;
+  let h = `<tr><th>Use</th><th>you asked</th><th>agent chose</th><th>default</th><th>total</th></tr>`;
+  h += `<tr><td>subagents</td><td></td><td></td><td></td>${cell(l.subagents)}</tr>`;
+  for (const k of ["skill", "command", "mcp", "plugin"]) h += `<tr><td>${k}s</td>${cell(c[k].human)}${cell(c[k].agent)}${cell(c[k].default)}${cell(c[k].total)}</tr>`;
+  h += `<tr><td>human share</td><td></td><td></td><td></td><td class="n">${fmt(l.tooling.human_share, "share")}</td></tr>`;
+  if (l.tooling.items.length) h += `<tr><td colspan="5" class="mono muted">${l.tooling.items.slice(0, 12).map(i => `${esc(i.category)}:${esc(i.name)} (${esc(i.initiator)}) ×${i.count}`).join(" · ")}</td></tr>`;
+  $("#leverage").innerHTML = h;
+}
+
+function renderDiag(d) {
+  const c = d.computed, rows = [["active (computed)", fmt(c.active_s, "s")], ["overlap (computed)", fmt(c.overlap_s, "s")],
+    ["turns", c.turns], ["sessions", c.sessions], ["interrupts", c.interrupts]];
+  for (const m of d.diagnostics.filter(m => !m.metric.startsWith("tooling") && m.metric !== "subagents")) rows.push([m.metric, fmt(m.value, m.unit) + (m.n != null ? ` (n=${m.n})` : "")]);
+  $("#diag").innerHTML = "<tr><th>Metric</th><th>Value</th></tr>" + rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${esc(v)}</td></tr>`).join("");
+}
+
+async function renderTrend(day) {
+  const t = await api(`/api/trend?end=${day}&days=7`);
+  const units = {V: "share", H: null, B_min: null, C: null, active_h: null};
+  let h = "<tr><th>Metric</th>" + t.days.map(d => `<th>${d.slice(5)}</th>`).join("") + "</tr>";
+  for (const [k, vals] of Object.entries(t.series)) h += `<tr><td>${k}</td>` + vals.map(v => `<td class="n">${fmt(v, units[k])}</td>`).join("") + "</tr>";
+  $("#trend").innerHTML = h;
+}
+
+async function showTurn(id) {
+  document.querySelectorAll("rect.bar.sel").forEach(r => r.classList.remove("sel"));
+  const bar = document.querySelector(`rect.bar[data-turn="${id}"]`);
+  if (bar) { bar.classList.add("sel"); bar.scrollIntoView({block: "nearest"}); }
+  try {
+    const t = await api(`/api/turn/${id}`);
+    $("#detail").classList.remove("muted");
+    $("#detail").innerHTML = `<p><strong>turn #${t.id}</strong> · ${esc(t.agent)} · ${esc(t.repo)} · ${hm(t.start)}–${hm(t.end)}${t.interrupted ? " · interrupted" : ""}</p>
+      <p class="mono">${esc(t.prompt) || dash}</p>
+      <p>Verification: <strong class="tier-${t.tier}">${t.tier.replace("_", " ")}</strong> <span class="muted">(${t.tier_source})</span></p>
+      <table><tr><th>Tool</th><th>Intent</th><th>Args</th></tr>${t.tools.map(c => `<tr><td>${esc(c.name)}${c.is_error ? ' <span class="tier-verified_fail">error</span>' : ""}</td><td>${esc(c.bash_intent || c.kind)}</td><td class="mono">${esc(c.args)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">no tool calls</td></tr>`}</table>
+      <p class="muted mono">${t.api.calls} calls · in ${t.api.input} · cached ${t.api.cached} · out ${t.api.output} · $${t.api.cost_usd}</p>`;
+  } catch (e) { $("#detail").textContent = "Turn not found."; }
+}
+
+async function load(day) {
+  const d = await api(`/api/day/${day}`);
+  $("#where").textContent = d.verdict.where;
+  $("#change").textContent = d.verdict.change;
+  renderTimeline(d); renderScored(d.scored); renderLeverage(d.leverage); renderDiag(d);
+  renderTrend(day);
+  const m = location.hash.match(/^#turn-(\d+)$/); if (m) showTurn(m[1]);
+}
+
+// --- analyst chat (minimal; SSE from POST /api/chat) ---
+const convo = [];
+api("/api/chat/status").then(st => {
+  $("#chatstate").textContent = st.available ? `Analyst ready (${st.model || "model"}).` : "Set ANTHROPIC_API_KEY and restart scorer serve to ask about your day.";
+  $("#ask").disabled = !st.available;
+}).catch(() => { $("#chatstate").textContent = "Analyst unavailable."; $("#ask").disabled = true; });
+$("#composer").onsubmit = async ev => {
+  ev.preventDefault();
+  const q = $("#q").value.trim(); if (!q) return;
+  $("#q").value = ""; $("#ask").disabled = true;
+  convo.push({role: "user", content: q});
+  $("#log").insertAdjacentHTML("beforeend", `<div class="ub">${esc(q)}</div>`);
+  const out = document.createElement("div"); $("#log").append(out);
+  let text = "";
+  try {
+    const r = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({messages: convo, day: $("#day").value})});
+    if (!r.ok) throw new Error("chat " + r.status);
+    const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const {value, done} = await rd.read(); if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let i; while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith("data: ")) continue;
+        const e = JSON.parse(line.slice(6));
+        if (e.type === "text-delta") { text += e.delta; out.textContent = text; }
+        else if (e.type === "tool-start") out.insertAdjacentHTML("beforebegin", `<div class="tc">${esc(e.name)}…</div>`);
+        else if (e.type === "tool-result") out.insertAdjacentHTML("beforebegin", `<div class="tc">${esc(e.name)} · ${e.ok ? "ok" : "error"} · ${esc(e.summary)} ${(e.citations || []).map(c => `<a class="pill" href="#turn-${c.turn_id}" title="${esc(c.label)}">[${c.n}]</a>`).join(" ")}</div>`);
+        else if (e.type === "error") out.insertAdjacentHTML("afterend", `<p class="tier-verified_fail">${esc(e.message)}</p>`);
+      }
+    }
+    convo.push({role: "assistant", content: text});
+  } catch (e) { out.textContent = "Chat failed: " + e.message; }
+  $("#ask").disabled = false;
+};
+
+addEventListener("hashchange", () => { const m = location.hash.match(/^#turn-(\d+)$/); if (m) showTurn(m[1]); });
+
+(async () => {
+  const info = await api("/api/days");
+  const sel = $("#day");
+  const days = info.days.length ? info.days.map(d => d.day) : [info.today];
+  sel.innerHTML = days.map(d => `<option>${d}</option>`).join("");
+  const want = new URLSearchParams(location.search).get("day");
+  sel.value = days.includes(want) ? want : days[0];
+  sel.onchange = () => load(sel.value);
+  $("#prev").onclick = () => { if (sel.selectedIndex < days.length - 1) { sel.selectedIndex++; load(sel.value); } };
+  $("#next").onclick = () => { if (sel.selectedIndex > 0) { sel.selectedIndex--; load(sel.value); } };
+  load(sel.value);
+})().catch(e => { $("#where").textContent = "Could not load data: " + e.message; });
+</script>
+</body>
+</html>
