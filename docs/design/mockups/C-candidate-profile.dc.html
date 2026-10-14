@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>scorer · Candidate profile</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&amp;family=Spline+Sans+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.root{--bg:#EEF1F5;--card:#FFFFFF;--sunk:#E3E7EE;--line:#D3D9E2;--text:#141A24;--muted:#4F5B6E;--accent:#23408E;--accent-tint:rgb(35 64 142 / .10);--claude:#B86E0B;--codex:#0F7480;--ok:#1E7B45;--warn:#8F5A00;--err:#B0261C;--warn-bg:#FFF4DE}
+.root.t-dark{--bg:#0F131A;--card:#171C25;--sunk:#1F2530;--line:#2C3442;--text:#E8ECF2;--muted:#A3AEBF;--accent:#8FA8FF;--accent-tint:rgb(143 168 255 / .16);--claude:#EBA145;--codex:#46C1CE;--ok:#5FCB8A;--warn:#E9B556;--err:#FF7B6E;--warn-bg:#2E2511}
+@media (prefers-color-scheme: dark){.root.t-auto{--bg:#0F131A;--card:#171C25;--sunk:#1F2530;--line:#2C3442;--text:#E8ECF2;--muted:#A3AEBF;--accent:#8FA8FF;--accent-tint:rgb(143 168 255 / .16);--claude:#EBA145;--codex:#46C1CE;--ok:#5FCB8A;--warn:#E9B556;--err:#FF7B6E;--warn-bg:#2E2511}}
+.root{background:var(--bg);color:var(--text);font-family:'Instrument Sans',ui-sans-serif,system-ui,sans-serif;font-size:17px;line-height:1.5;min-height:100vh}
+.root *{box-sizing:border-box}
+.mono{font-family:'Spline Sans Mono',ui-monospace,Menlo,monospace;font-feature-settings:"tnum"}
+.muted{color:var(--muted)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+button,select,textarea,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+.h2{margin:0 0 12px;font-size:20px;font-weight:700}
+.btn{background:var(--card);border:1px solid var(--line);border-radius:6px;min-height:40px;padding:6px 14px;font-weight:600;font-size:15px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+.btn:hover{border-color:var(--text)}
+.btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.ev{background:none;border:0;padding:0;cursor:pointer;color:var(--accent);text-decoration:underline;text-underline-offset:3px;font-family:'Spline Sans Mono',monospace;font-size:14px}
+.cite{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;padding:0 5px;border-radius:9999px;border:0;background:var(--accent-tint);color:var(--accent);font-family:'Spline Sans Mono',monospace;font-size:11px;font-weight:600;cursor:pointer;vertical-align:super;line-height:1}
+.cite:hover,.cite.on{background:var(--accent);color:#fff}
+.mt{width:100%;border-collapse:collapse}
+.mt th{text-align:left;font-size:13px;font-weight:600;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--line)}
+.mt td{padding:14px 10px;border-bottom:1px solid var(--line);vertical-align:top;font-size:15px}
+.big{font-family:'Spline Sans Mono',monospace;font-size:22px;font-weight:600}
+.delta-neg{color:var(--err);font-family:'Spline Sans Mono',monospace;font-size:14px}
+.delta-pos{color:var(--ok);font-family:'Spline Sans Mono',monospace;font-size:14px}
+.prompt{background:var(--sunk);border-radius:6px;padding:8px 10px;font-size:14px;margin-top:6px}
+.tag{font-size:12px;font-weight:600;padding:2px 8px;border-radius:4px;background:var(--sunk);display:inline-block;margin:0 4px 4px 0}
+.tag.warn{background:var(--warn-bg);color:var(--warn)}
+.bullet{display:flex;align-items:flex-end;gap:3px;height:28px}
+.bullet i{display:block;width:10px;background:var(--line);border-radius:2px 2px 0 0}
+.bullet i.now{background:var(--accent)}
+/* timeline */
+.tl{display:grid;grid-template-columns:200px minmax(0,1fr);row-gap:8px;align-items:center}
+.trk{position:relative;height:26px;background:var(--sunk);border-radius:4px}
+.b{position:absolute;top:3px;height:20px;border-radius:3px;border:0;padding:0;cursor:pointer}
+.b.cl{background:var(--claude)}
+.b.cx{background:repeating-linear-gradient(90deg,var(--codex) 0 4px,transparent 4px 6px),var(--codex);background-blend-mode:normal;opacity:1}
+.b.cx{background:repeating-linear-gradient(90deg,var(--codex) 0 5px,color-mix(in srgb,var(--codex) 55%,var(--card)) 5px 7px)}
+.b.hl{outline:3px solid var(--accent);outline-offset:2px;z-index:2}
+.b.fade{-webkit-mask-image:linear-gradient(90deg,#000 75%,transparent);mask-image:linear-gradient(90deg,#000 75%,transparent)}
+.ix{position:absolute;top:-4px;bottom:-4px;width:3px;background:var(--err);border-radius:2px;z-index:3}
+.ov{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,rgb(0 0 0 / .14) 0 2px,transparent 2px 6px)}
+.trap{position:absolute;top:0;transform:translateX(-50%);font-size:12px;font-weight:700;background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:0 6px;white-space:nowrap}
+.ax{position:relative;height:18px;font-size:12px;color:var(--muted)}
+.ax span{position:absolute;transform:translateX(-50%);font-family:'Spline Sans Mono',monospace}
+.stk{display:flex;height:12px;border-radius:3px;overflow:hidden;background:var(--sunk)}
+.stk i{display:block}
+/* chat */
+.chat{background:var(--card);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;height:1240px;overflow:hidden}
+.ch{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.badge{font-family:'Spline Sans Mono',monospace;font-size:11px;border:1px solid var(--line);border-radius:9999px;padding:1px 8px;color:var(--muted)}
+.msgs{flex:1;overflow:auto;padding:18px 16px;display:flex;flex-direction:column;gap:26px}
+.ub{align-self:flex-end;max-width:88%;background:var(--accent);color:#fff;border-radius:10px;padding:10px 14px;font-size:15px}
+.am{width:95%;font-size:15px}
+.am p{margin:6px 0}
+.st{background:none;border:0;padding:2px 0;cursor:pointer;color:var(--muted);font-size:14px;display:inline-flex;gap:6px;align-items:center}
+.steps{list-style:none;margin:4px 0;padding:0 0 0 10px;border-left:2px solid var(--line)}
+.steps li{display:flex;gap:8px;padding:3px 0;font-size:13px}
+.steps code{font-family:'Spline Sans Mono',monospace;font-size:12px;color:var(--muted)}
+.okc{color:var(--ok)}
+.evc{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:8px 0}
+.evc-h{background:var(--sunk);padding:6px 12px;font-size:12px;font-weight:600;display:flex;justify-content:space-between}
+.evr{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;padding:7px 12px;border:0;border-top:1px solid var(--line);background:none;width:100%;text-align:left;font-size:13px;cursor:pointer;align-items:center}
+.evr:hover{background:var(--sunk)}
+.pill{display:inline-flex;justify-content:center;min-width:20px;border-radius:9999px;background:var(--sunk);font-family:'Spline Sans Mono',monospace;font-size:11px;font-weight:600}
+.guard{border:1px dashed var(--line);border-radius:8px;padding:8px 12px;font-size:14px;color:var(--muted);margin-top:8px}
+.think{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
+.spin{width:14px;height:14px;border-radius:9999px;border:2px solid var(--line);border-top-color:var(--accent);animation:r .9s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+.sugg button{display:block;background:none;border:0;padding:5px 0;cursor:pointer;font-size:14px;text-align:left}
+.sugg button:hover{color:var(--accent)}
+.disc{font-size:12px;color:var(--muted);padding:6px 16px;border-top:1px solid var(--line);background:var(--sunk)}
+.comp{display:flex;gap:10px;align-items:flex-end;padding:10px 16px 16px}
+.comp textarea{flex:1;resize:none;min-height:44px;max-height:160px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--bg);font-size:15px}
+.rb{width:36px;height:36px;border-radius:9999px;border:0;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:none}
+.rb.send{background:var(--accent);color:#fff}
+.peek{position:absolute;inset:0 0 0 12%;background:var(--card);border-left:1px solid var(--line);box-shadow:-10px 0 30px rgb(0 0 0 / .14);padding:16px;display:flex;flex-direction:column;gap:10px;z-index:4}
+.pq{margin:0;padding:8px 12px;border-left:3px solid var(--warn);background:var(--sunk);font-family:'Spline Sans Mono',monospace;font-size:13px;white-space:pre-line}
+</style>
+</helmet>
+<div class="{{rootClass}}">
+<div style="max-width: 1440px; margin: 0 auto; padding: 20px 24px 64px">
+
+<header style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px">
+  <div>
+    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap"><span class="mono" style="font-weight: 600">scorer</span><span class="muted">/</span><span style="font-weight: 600">Candidate C-0417</span><span class="tag">take-home · paginated VM list</span><span class="tag" style="color: var(--ok)">consent on file</span></div>
+    <div class="muted" style="font-size: 14px">Reviewer: [PANEL REVIEWER] · candidate sees this same profile · retention until 2027-01-11</div>
+  </div>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+    <label for="day" class="sr">Day</label>
+    <select id="day" class="btn mono"><option>Mon 2026-10-12 (practice)</option><option selected="selected">Tue 2026-10-13 (challenge)</option></select>
+    <button class="btn" onClick="{{toggleTheme}}">{{themeLabel}}</button>
+    <button class="btn">Export for debrief</button>
+  </div>
+</header>
+
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; margin-top: 20px">
+<main style="flex: 999 1 760px; min-width: 0; display: flex; flex-direction: column; gap: 20px">
+
+<section class="card" aria-labelledby="vh">
+  <p class="muted" style="margin: 0; font-size: 14px">Where the day went · what to discuss</p>
+  <h1 id="vh" style="margin: 4px 0 0; font-size: 30px; line-height: 1.2; font-weight: 700">Caught 2 of 3 planted traps and pushed back on the agent when it was wrong. Verified only <span class="mono">41 %</span> of edit batches while running two agents at once.</h1>
+  <p style="margin: 12px 0 0; font-size: 16px">Over 5.2 active hours the candidate used two Claude sessions and one Codex session in parallel 38 % of the time. They asked the clarifying question on the nullable sort date before any code<button class="cite" onClick="{{c2104}}" aria-label="Citation 1">1</button>, spotted the dead README flag<button class="cite" onClick="{{c2110}}" aria-label="Citation 2">2</button>, and re-ran the flaky test twice without investigating it<button class="cite" onClick="{{c2118}}" aria-label="Citation 3">3</button>. <span class="muted" style="font-size: 13px">Written by analyst agent · cites turns</span></p>
+  <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; font-size: 14px"><span class="tag warn">Metrics are debrief prompts, not gates</span><span class="tag">Timing is never a disqualifier</span><span class="tag">Negative labels need a human transcript read</span></div>
+</section>
+
+<section class="card" aria-labelledby="tlh">
+  <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px"><h2 class="h2" id="tlh">Challenge day</h2><span class="mono muted" style="font-size: 14px">09:00–17:00 · 3 sessions · 3 interruptions</span></div>
+  <div class="tl">
+    <span class="muted" style="font-size: 13px">Planted traps</span>
+    <div style="position: relative; height: 22px"><span class="trap" style="left: 3.13%">T1 README flag</span><span class="trap" style="left: 21.25%">T3 nullable sort</span><span class="trap" style="left: 60%">T2 flaky test</span></div>
+    <span style="font-size: 14px"><b style="color: var(--claude)">Claude</b> · k41a<br><span class="mono muted" style="font-size: 12px">claude-opus-5-5</span></span>
+    <div class="trk"><span class="ov" style="left: 12.5%; width: 4.17%"></span><span class="ov" style="left: 18.75%; width: 6.25%"></span><span class="ov" style="left: 56.25%; width: 8.33%"></span><span class="ov" style="left: 66.67%; width: 4.17%"></span><span class="ov" style="left: 77.08%; width: 4.17%"></span><button class="b cl" style="left: 2.08%; width: 14.58%" aria-label="Turn 2101"></button><button class="{{bar2104}}" style="left: 18.75%; width: 14.58%" aria-label="Turn 2104" onClick="{{c2104}}"></button><button class="{{bar2118}}" style="left: 50%; width: 14.58%" aria-label="Turn 2118" onClick="{{c2118}}"></button><button class="b cl" style="left: 66.67%; width: 14.58%" aria-label="Turn 2126"></button><span class="ix" style="left: 57.29%" title="Interrupted 13:35"></span></div>
+    <span style="font-size: 14px"><b style="color: var(--codex)">Codex</b> · p7e2<br><span class="mono muted" style="font-size: 12px">gpt-6-codex</span></span>
+    <div class="trk"><span class="ov" style="left: 12.5%; width: 4.17%"></span><span class="ov" style="left: 18.75%; width: 6.25%"></span><span class="ov" style="left: 56.25%; width: 8.33%"></span><span class="ov" style="left: 66.67%; width: 4.17%"></span><span class="ov" style="left: 77.08%; width: 4.17%"></span><button class="b cx" style="left: 12.5%; width: 12.5%" aria-label="Turn 2103"></button><button class="{{bar2121}}" style="left: 56.25%; width: 14.58%" aria-label="Turn 2121" onClick="{{c2121}}"></button><button class="b cx" style="left: 77.08%; width: 12.5%" aria-label="Turn 2130"></button><span class="ix" style="left: 67.08%" title="Interrupted 14:22"></span></div>
+    <span style="font-size: 14px"><b style="color: var(--claude)">Claude</b> · w03c<br><span class="mono muted" style="font-size: 12px">claude-sonnet-5-5</span></span>
+    <div class="trk"><button class="{{bar2110}}" style="left: 35.42%; width: 6.25%" aria-label="Turn 2110" onClick="{{c2110}}"></button><button class="b cl fade" style="left: 90.63%; width: 6.25%" aria-label="Turn 2135, no finish time"></button><span class="ix" style="left: 39.58%" title="Interrupted 12:10"></span></div>
+    <span></span>
+    <div class="ax" aria-hidden="true"><span style="left: 0%">09</span><span style="left: 12.5%">10</span><span style="left: 25%">11</span><span style="left: 37.5%">12</span><span style="left: 50%">13</span><span style="left: 62.5%">14</span><span style="left: 75%">15</span><span style="left: 87.5%">16</span><span style="left: 100%">17</span></div>
+  </div>
+  <p class="muted" style="font-size: 13px; margin: 10px 0 0">Claude solid, Codex striped. Hatched = overlap. Red bar = interruption. Gap 12:20–13:00 is a break. Faded end = no finish time.</p>
+</section>
+
+<section class="card" aria-labelledby="mh">
+  <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px"><h2 class="h2" id="mh">Scored choices vs 7-day baseline</h2><span class="muted" style="font-size: 14px">baseline = candidate's own practice days 10-07 → 10-12</span></div>
+  <div style="overflow-x: auto">
+  <table class="mt">
+    <thead><tr><th style="width: 30%">Metric</th><th>Today</th><th>7 days</th><th style="width: 40%">Ask in the debrief</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>V</b> Verification after changes<div class="muted" style="font-size: 13px">pass 7 · fail 2 · inspected 4 · none 9</div><button class="ev" onClick="{{c2121}}">#2121 none</button></td>
+        <td><span class="big">41 %</span><br><span class="delta-neg">−14 vs 55 %</span></td>
+        <td><div class="bullet"><i style="height: 58%"></i><i style="height: 62%"></i><i style="height: 55%"></i><i style="height: 49%"></i><i style="height: 52%"></i><i class="now" style="height: 41%"></i></div></td>
+        <td><div class="prompt">"While Codex was patching the list endpoint, how did you know the Claude change still passed?"</div></td>
+      </tr>
+      <tr>
+        <td><b>E</b> Response to evidence<div class="muted" style="font-size: 13px">2 failing signals: 1 investigated, 1 re-run and shipped</div><button class="ev" onClick="{{c2118}}">#2118 re-run ×2</button></td>
+        <td><span class="big">1 / 2</span></td>
+        <td><div class="bullet"><i style="height: 50%"></i><i style="height: 100%"></i><i style="height: 50%"></i><i style="height: 100%"></i><i style="height: 50%"></i><i class="now" style="height: 50%"></i></div></td>
+        <td><div class="prompt">"The VM test failed then passed. What would you have needed to call it flaky?"</div></td>
+      </tr>
+      <tr>
+        <td><b>C</b> Correction episodes<div style="margin-top: 4px"><span class="tag">clarification · info missing · human</span><span class="tag">correction · instruction violated · human</span><span class="tag warn">judge unsure</span></div><button class="ev" onClick="{{c2104}}">#2104</button> <button class="ev" onClick="{{c2110}}">#2110</button></td>
+        <td><span class="big">3</span><br><span class="muted" style="font-size: 13px">2 caught by candidate</span></td>
+        <td><div class="bullet"><i style="height: 30%"></i><i style="height: 60%"></i><i style="height: 30%"></i><i style="height: 90%"></i><i style="height: 60%"></i><i class="now" style="height: 90%"></i></div></td>
+        <td><div class="prompt">"You asked about the null sort date before writing code. What made you suspect it?"</div></td>
+      </tr>
+      <tr>
+        <td><b>H</b> Hand-edits outside the agent<div class="muted" style="font-size: 13px">repair 31 lines · own work 15 lines</div></td>
+        <td><span class="big">46</span><br><span class="muted" style="font-size: 13px">lines</span></td>
+        <td><div class="bullet"><i style="height: 30%"></i><i style="height: 18%"></i><i style="height: 40%"></i><i style="height: 22%"></i><i style="height: 35%"></i><i class="now" style="height: 52%"></i></div></td>
+        <td><div class="prompt">"Which edits did you choose to make yourself, and why not prompt?"</div></td>
+      </tr>
+      <tr>
+        <td><b>B</b> Blocked-agent minutes<div class="muted" style="font-size: 13px">worst window 14:40–14:58 · 6 attended gaps</div></td>
+        <td><span class="big">47</span><br><span class="muted" style="font-size: 13px">min</span></td>
+        <td><div class="bullet"><i style="height: 44%"></i><i style="height: 36%"></i><i style="height: 62%"></i><i style="height: 52%"></i><i style="height: 70%"></i><i class="now" style="height: 94%"></i></div></td>
+        <td><div class="muted" style="font-size: 14px">Context only. Not a debrief topic for a take-home.</div></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px">
+  <section class="card" aria-labelledby="dgh">
+    <h2 class="h2" id="dgh" style="font-size: 17px">Diagnostics <span class="muted" style="font-weight: 400">· shown, not scored</span></h2>
+    <dl class="mono" style="margin: 0; font-size: 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px">
+      <dt class="muted">active / overlap</dt><dd style="margin: 0">5.2 h / 38 %</dd>
+      <dt class="muted">gaps &lt;30s · 30s–2m · 2–5m · 5–15m</dt><dd style="margin: 0">14 · 22 · 11 · 6</dd>
+      <dt class="muted">interruptions</dt><dd style="margin: 0">3</dd>
+      <dt class="muted">context p50 / p90</dt><dd style="margin: 0">34 % / 78 %</dd>
+      <dt class="muted">models</dt><dd style="margin: 0">opus 41 · sonnet 27 · codex 32</dd>
+      <dt class="muted">tokens in / out</dt><dd style="margin: 0">18.4 M / 412 k</dd>
+      <dt class="muted">cost</dt><dd style="margin: 0">$23.40</dd>
+      <dt class="muted">subagents · compactions</dt><dd style="margin: 0">6 · 2</dd>
+    </dl>
+  </section>
+  <section class="card" aria-labelledby="lvh">
+    <h2 class="h2" id="lvh" style="font-size: 17px">Leverage <span class="muted" style="font-weight: 400">· tooling, not scored</span></h2>
+    <p class="mono" style="margin: 0 0 10px; font-size: 14px">human-initiated 38 %</p>
+    <div style="display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px 10px; align-items: center; font-size: 13px">
+      <span>Skills 11</span><div class="stk"><i style="width: 46%; background: var(--accent)"></i><i style="width: 36%; background: var(--muted)"></i><i style="width: 18%; background: var(--line)"></i></div>
+      <span>Commands 5</span><div class="stk"><i style="width: 80%; background: var(--accent)"></i><i style="width: 20%; background: var(--line)"></i></div>
+      <span>MCP 37</span><div class="stk"><i style="width: 14%; background: var(--accent)"></i><i style="width: 78%; background: var(--muted)"></i><i style="width: 8%; background: var(--line)"></i></div>
+      <span>Plugins 5</span><div class="stk"><i style="width: 40%; background: var(--muted)"></i><i style="width: 60%; background: var(--line)"></i></div>
+    </div>
+    <p class="muted mono" style="font-size: 12px; margin: 8px 0 0">top: review, qa · /compact, /review · linear, context7</p>
+    <p class="muted" style="font-size: 12px; margin: 4px 0 0">candidate · agent · default (hook / config)</p>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="fh">
+  <h2 class="h2" id="fh" style="font-size: 17px">Before this profile is used</h2>
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; font-size: 15px">
+    <label style="display: flex; gap: 10px; align-items: center"><input type="checkbox" checked="checked" style="width: 20px; height: 20px"><span>Written consent lists what was captured</span></label>
+    <label style="display: flex; gap: 10px; align-items: center"><input type="checkbox" checked="checked" style="width: 20px; height: 20px"><span>Candidate has a copy of this profile</span></label>
+    <label style="display: flex; gap: 10px; align-items: center"><input type="checkbox" style="width: 20px; height: 20px"><span>Transcript read for #2118 (negative E label)</span></label>
+    <label style="display: flex; gap: 10px; align-items: center"><input type="checkbox" style="width: 20px; height: 20px"><span>Judge-unsure label #2130 resolved by a human</span></label>
+  </div>
+</section>
+</main>
+
+<aside style="flex: 1 1 400px; max-width: 460px; min-width: 0" aria-label="Ask about this candidate">
+  <div class="chat">
+    <div class="ch"><div><b>Ask about this candidate</b><div style="display: flex; gap: 6px; margin-top: 2px"><span class="badge">claude-opus-5-5</span><span class="badge">read-only</span></div></div></div>
+    <div class="msgs">
+      <div class="ub">Did they actually look into the flaky test, or just re-run it?</div>
+      <div class="am">
+        <button class="st" onClick="{{toggleSteps}}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true" class="okc"><path d="M20 6L9 17l-5-5"></path></svg>4 steps completed {{caret}}</button>
+        <sc-if value="{{stepsOpen}}" hint-placeholder-val="{{ true }}">
+        <ul class="steps">
+          <li><span class="okc">✓</span><span>Listed sessions <code>list_sessions(day="2026-10-13")</code></span></li>
+          <li><span class="okc">✓</span><span>Found failing test runs <code>query_db("SELECT … WHERE bash_intent='test' AND is_error=1")</code></span></li>
+          <li><span class="okc">✓</span><span>Read turn 2118 <code>get_turn(2118)</code></span></li>
+          <li><span class="okc">✓</span><span>Read metric E <code>get_metric("E")</code></span></li>
+        </ul>
+        </sc-if>
+        <p>They re-ran it. <span class="mono" style="font-size: 14px">pnpm vitest run vm</span> failed at 13:48, then the next two prompts were "run it again" and "ok ship it"<button class="cite" onClick="{{c2118}}" aria-label="Citation 1">1</button>. No file in the test or mock was opened in between.</p>
+        <div class="evc">
+          <div class="evc-h"><span>Failing signals</span><span class="mono" style="font-weight: 400">2</span></div>
+          <button class="evr" onClick="{{c2118}}"><span class="pill">1</span><span>k41a · <span class="mono">#2118</span> · 13:48 · vitest fail</span><span class="tag warn" style="margin: 0">re-run</span></button>
+          <button class="evr" onClick="{{c2110}}"><span class="pill">2</span><span>w03c · <span class="mono">#2110</span> · 12:04 · flag no effect</span><span class="tag" style="margin: 0; color: var(--ok)">investigated</span></button>
+        </div>
+        <p>Contrast: with the README flag they grepped for its use and told the agent to drop it<button class="cite" onClick="{{c2110}}" aria-label="Citation 2">2</button>.</p>
+        <div class="guard">I don't make hire or no-hire calls. Suggested debrief question: "What would you have needed to call that test flaky?"</div>
+      </div>
+      <div class="ub">Is the 41 % verification low for take-homes?</div>
+      <div class="am">
+        <div class="think"><span class="spin" aria-hidden="true"></span>Thinking</div>
+      </div>
+      <div class="sugg">
+        <span class="muted" style="font-size: 12px">Suggested</span>
+        <button>Which corrections came from the candidate?</button>
+        <button>What did they do by hand instead of prompting?</button>
+        <button>Summarise for the debrief in 5 bullets</button>
+      </div>
+    </div>
+    <div class="disc">Judge labels are model output. A human reads the transcript before any negative label counts.</div>
+    <div class="comp">
+      <label for="ask" class="sr">Ask about this candidate</label>
+      <textarea id="ask" rows="1" placeholder="Ask about C-0417…"></textarea>
+      <button class="rb send" aria-label="Send"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+    </div>
+    <sc-if value="{{peekOpen}}" hint-placeholder-val="{{ false }}">
+      <div class="peek">
+        <div style="display: flex; justify-content: space-between; align-items: center"><b>{{p.title}}</b><button class="btn" style="min-height: 32px; padding: 2px 8px" aria-label="Close" onClick="{{closePeek}}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"></path></svg></button></div>
+        <div class="mono muted" style="font-size: 12px">{{p.path}}</div>
+        <div><span class="tag warn">{{p.badge}}</span></div>
+        <blockquote class="pq">{{p.quote}}</blockquote>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap"><button class="btn on" onClick="{{closePeek}}">Highlight in timeline</button><button class="btn">Copy link</button></div>
+      </div>
+    </sc-if>
+  </div>
+</aside>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["auto","light","dark"],"default":"auto"},"$preview":{"width":1440,"height":2600}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { theme: null, sel: 2118, peek: false, stepsOpen: true };
+  }
+  renderVals() {
+    const theme = this.state.theme || this.props.theme || 'auto';
+    const P = {
+      2104: { title: 'Clarification before code', path: 'challenge · k41a · turn #2104 · 10:30', badge: 'C · clarification · info missing', quote: '"before you start: can sort_date be null? if so where do those rows go across pages?"' },
+      2110: { title: 'Dead README flag caught', path: 'challenge · w03c · turn #2110 · 11:50', badge: 'C · correction · human review', quote: '"--strict does nothing, rg shows it is never read. drop it"\nBash rg "strict" src/ (search)' },
+      2118: { title: 'Flaky test re-run, not investigated', path: 'challenge · k41a · turn #2118 · 13:00–14:10', badge: 'E · ship anyway', quote: '"run it again"\nBash pnpm vitest run vm (fail)\nBash pnpm vitest run vm (pass)\n"ok ship it"' },
+      2121: { title: 'Unverified patch', path: 'challenge · p7e2 · turn #2121 · 13:30–14:40', badge: 'V none', quote: '"add cursor pagination to the list endpoint"\napply_patch src/api/list.ts +64 −12' }
+    };
+    const sel = this.state.sel;
+    const pick = (id) => () => this.setState({ sel: id, peek: true });
+    const bar = (id, k) => 'b ' + k + (sel === id ? ' hl' : '');
+    return {
+      rootClass: 'root t-' + theme,
+      themeLabel: theme === 'dark' ? 'Light' : 'Dark',
+      toggleTheme: () => this.setState({ theme: theme === 'dark' ? 'light' : 'dark' }),
+      c2104: pick(2104), c2110: pick(2110), c2118: pick(2118), c2121: pick(2121),
+      bar2104: bar(2104, 'cl'), bar2110: bar(2110, 'cl'), bar2118: bar(2118, 'cl'), bar2121: bar(2121, 'cx'),
+      p: P[sel], peekOpen: this.state.peek,
+      closePeek: () => this.setState({ peek: false }),
+      stepsOpen: this.state.stepsOpen,
+      caret: this.state.stepsOpen ? '▴' : '▾',
+      toggleSteps: () => this.setState({ stepsOpen: !this.state.stepsOpen })
+    };
+  }
+}
+</script>
+</body>
+</html>
