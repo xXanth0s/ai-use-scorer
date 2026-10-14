@@ -25,7 +25,9 @@ CODEX_TIMEOUTS = {"SessionEnd": 3}  # codex clamps SessionEnd to 3 s and warns o
 
 
 def hook_command(agent: str, event: str) -> str:
-    return f'"{os.path.abspath(sys.executable)}" -m scorer event --agent {agent} --event {event}'
+    # `2>/dev/null || true`: a broken venv must never print or exit non-zero.
+    return (f'"{os.path.abspath(sys.executable)}" -m scorer event --agent {agent} --event {event}'
+            " 2>/dev/null || true")
 
 
 def _is_scorer_group(group) -> bool:
