@@ -12,9 +12,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&amp;family=DM+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
 <style>
 body{margin:0}
-.root{--bg:#ffffff;--fg:#1c2d22;--card:#fefcf8;--muted:#f7f7f5;--muted-fg:#4d5a4d;--accent:#f0efed;--border:#ddd9d3;--primary:#1c2d22;--primary-fg:#ffffff;--grass:#316c5a;--salmon:#ffb299;--claude:#b36813;--codex:#0369a1;--ok:#316c5a;--ok-bg:#e6edeb;--fail:#802d11;--fail-bg:#f1e7e2;--unv:#c9c4bc;--pill:rgba(28,45,34,.1);--shade:rgba(28,45,34,.06);--mid:#8a958a}
-.root.t-dark{--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--muted-fg:#a1a1a1;--accent:#262626;--border:rgba(255,255,255,.1);--primary:#e5e5e5;--primary-fg:#171717;--grass:#4ade80;--claude:#c98a3f;--codex:#38bdf8;--ok:#4ade80;--ok-bg:rgba(74,222,128,.12);--fail:#f0a58a;--fail-bg:rgba(240,165,138,.12);--unv:#404040;--pill:rgba(255,255,255,.1);--shade:rgba(255,255,255,.06);--mid:#737373}
-@media (prefers-color-scheme: dark){.root.t-auto{--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--muted-fg:#a1a1a1;--accent:#262626;--border:rgba(255,255,255,.1);--primary:#e5e5e5;--primary-fg:#171717;--grass:#4ade80;--claude:#c98a3f;--codex:#38bdf8;--ok:#4ade80;--ok-bg:rgba(74,222,128,.12);--fail:#f0a58a;--fail-bg:rgba(240,165,138,.12);--unv:#404040;--pill:rgba(255,255,255,.1);--shade:rgba(255,255,255,.06);--mid:#737373}}
+.root{--bg:#ffffff;--fg:#1c2d22;--card:#fefcf8;--muted:#f7f7f5;--muted-fg:#4d5a4d;--accent:#f0efed;--border:#ddd9d3;--primary:#1c2d22;--primary-fg:#ffffff;--grass:#316c5a;--salmon:#ffb299;--claude:#b36813;--codex:#0369a1;--ok:#316c5a;--ok-bg:#e6edeb;--fail:#802d11;--fail-bg:#f1e7e2;--unv:#c9c4bc;--pill:rgba(28,45,34,.1);--shade:rgba(28,45,34,.06);--mid:#8a958a;--app:#fbf6ee}
+.root.t-dark{--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--muted-fg:#a1a1a1;--accent:#262626;--border:rgba(255,255,255,.1);--primary:#e5e5e5;--primary-fg:#171717;--grass:#4ade80;--claude:#c98a3f;--codex:#38bdf8;--ok:#4ade80;--ok-bg:rgba(74,222,128,.12);--fail:#f0a58a;--fail-bg:rgba(240,165,138,.12);--unv:#404040;--pill:rgba(255,255,255,.1);--shade:rgba(255,255,255,.06);--mid:#737373;--app:#050505}
+@media (prefers-color-scheme: dark){.root.t-auto{--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--muted-fg:#a1a1a1;--accent:#262626;--border:rgba(255,255,255,.1);--primary:#e5e5e5;--primary-fg:#171717;--grass:#4ade80;--claude:#c98a3f;--codex:#38bdf8;--ok:#4ade80;--ok-bg:rgba(74,222,128,.12);--fail:#f0a58a;--fail-bg:rgba(240,165,138,.12);--unv:#404040;--pill:rgba(255,255,255,.1);--shade:rgba(255,255,255,.06);--mid:#737373;--app:#050505}}
 .root{background:var(--bg);color:var(--fg);font-family:'GT America Standard','GT America','Public Sans',ui-sans-serif,system-ui,sans-serif;font-size:15px;line-height:1.55;font-variant-numeric:tabular-nums;min-height:100vh;-webkit-font-smoothing:antialiased}
 .root *{box-sizing:border-box}
 .code{font-family:'GT America Mono','DM Mono',ui-monospace,Menlo,monospace;font-size:13.5px}
@@ -137,7 +137,7 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
 .cnt{font-size:14px;color:var(--muted-fg);text-align:right}
 .aside{width:0;flex:none;overflow:hidden;border-left:1px solid var(--border);background:var(--bg);transition:width .3s ease-in-out}
 .aside.open{width:26rem}
-.ain{width:26rem;max-width:100vw;position:sticky;top:0;height:min(100vh,880px);display:flex;flex-direction:column}
+.ain{width:26rem;max-width:100vw;position:sticky;top:0;height:min(100vh,900px);display:flex;flex-direction:column}
 .ahead{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--border)}
 .model{font-size:12px;color:var(--muted-fg);border:1px solid var(--border);border-radius:9999px;padding:0 8px}
 .convo{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:32px}
@@ -176,79 +176,128 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 @media (max-width:1100px){.band,.grid2{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:760px){.top,.content{padding-left:16px;padding-right:16px}.tlrow{grid-template-columns:120px minmax(0,1fr)}.ovlwrap{left:120px}.sk{grid-template-columns:110px minmax(0,1fr)}.sk .cnt{grid-column:1 / -1;text-align:left}.aside.open{position:fixed;inset:0;width:100%;z-index:20}}
+
+.root{background:var(--app)}
+.top{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:0 24px;background:var(--bg);border-bottom:1px solid var(--border)}
+.sep{width:1px;height:16px;background:var(--border);margin:0 8px}
+.btn.icon{width:36px;padding:0;justify-content:center}
+.btn{box-shadow:0 1px 2px 0 rgb(0 0 0 / .05)}
+.btn.on{box-shadow:none}
+.maincol{flex:1;min-width:0;display:flex;flex-direction:column}
+.tabs{display:flex;gap:24px;margin:0;padding:0 32px;background:var(--bg);border-bottom:1px solid var(--border);overflow-x:auto}
+.tab{height:44px;padding:0;font-size:14px}
+.content{padding:28px 32px 64px}
+.wrap{max-width:1400px;margin:0 auto;gap:24px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:0 1px 2px 0 rgb(0 0 0 / .04);overflow:hidden;min-width:0}
+.card.ov{overflow:visible}
+.card-h{display:flex;align-items:center;justify-content:space-between;gap:12px 16px;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid var(--border)}
+.card-b{padding:16px 20px}
+.band{display:grid}
+.grid2,.stack{gap:24px}
+.lines{padding-top:4px;padding-bottom:4px}
+.lines .ln:first-child{border-top:0}
+.lines .ln:last-child{border-bottom:0}
+.diag{border:0;padding:0 20px}
+.tbl{font-size:14px}
+.tbl th{height:44px;padding:0 16px;background:var(--muted)}
+.tbl td{padding:12px 16px}
+.tbl tbody tr:last-child td{border-bottom:0}
+.dot{border-radius:2px}
+.charts{gap:24px}
+.chart .card-h h2{font-size:15px;font-weight:500}
+.sk:last-of-type{border-bottom:0}
+.tag{display:inline-flex;align-items:center;height:20px;padding:0 8px;border:1px solid var(--border);border-radius:9999px;font-size:12px;font-weight:500;line-height:1;background:var(--bg)}
+.tag.dashed{border-style:dashed;color:var(--muted-fg);background:transparent}
+.acts{list-style:none;margin:0;padding:0}
+.act{display:grid;grid-template-columns:28px minmax(0,1fr);gap:12px;padding:18px 20px;border-bottom:1px solid var(--border)}
+.act:last-child{border-bottom:0}
+.actn{font-weight:600;color:var(--muted-fg)}
+.actb{display:flex;flex-direction:column;gap:8px;min-width:0}
+.acth{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.actf{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:6px;max-width:100%;background:var(--muted);border:1px solid var(--border);border-radius:6px;padding:4px 4px 4px 10px}
+.pill .code{overflow-wrap:anywhere}
+.copy{width:28px;height:28px;flex:none;border:0;border-radius:4px;background:transparent;color:var(--muted-fg);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.copy:hover{background:var(--accent);color:var(--fg)}
+@media (max-width:760px){.top,.tabs,.content{padding-left:16px;padding-right:16px}}
 </style>
 </helmet>
 <div class="{{rootClass}}">
 <div class="app">
   <div class="main">
     <header class="top">
-      <div class="toprow">
-        <span class="brand">scorer</span>
-        <span class="muted" aria-hidden="true">/</span>
-        <h1>Tuesday, 14 October</h1>
-        <span class="muted small">6 sessions in 4 repos · Claude Code and Codex</span>
-        <div class="btns">
-          <button type="button" class="btn">Tue 14 Oct<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
-          <button type="button" class="ghost" aria-label="Switch to {{themeLabel}} theme" onClick="{{toggleTheme}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg></button>
-          <button type="button" class="{{askClass}}" aria-pressed="{{askOpen}}" onClick="{{toggleAsk}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>Ask AI</button>
-        </div>
+      <span class="brand">scorer</span>
+      <span class="sep" aria-hidden="true"></span>
+      <span class="muted small">{{tabLabel}}</span>
+      <span style="flex: 1"></span>
+      <div class="btns">
+        <button type="button" class="ghost" aria-label="Previous day"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button>
+        <button type="button" class="btn">Tue 14 Oct · 20 turns<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+        <button type="button" class="ghost" aria-label="Next day" disabled="{{ true }}" style="opacity: .4"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></button>
+        <button type="button" class="btn icon" aria-label="Switch to {{themeLabel}} theme" onClick="{{toggleTheme}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg></button>
+        <button type="button" class="{{askClass}}" aria-pressed="{{askOpen}}" onClick="{{toggleAsk}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>Ask AI</button>
       </div>
+    </header>
+    <div class="body">
+      <div class="maincol">
       <nav class="tabs" aria-label="Views">
         <sc-for list="{{tabs}}" as="t" hint-placeholder-count="4"><button type="button" class="{{t.cls}}" aria-current="{{t.cur}}" onClick="{{t.pick}}">{{t.label}}</button></sc-for>
       </nav>
-    </header>
-    <div class="body">
       <main class="content">
         <div class="wrap">
 
           <sc-if value="{{isToday}}" hint-placeholder-val="{{ true }}">
-            <div class="band">
-              <div class="narr">
-                <p>A blocked day. Agents waited on you for 47 minutes, double your median, mostly the rate-limit worktree while you were in web-dashboard<button type="button" class="{{n1Class}}" aria-label="Source 1" onClick="{{n1}}">1</button>. Verification fell: three patches to the rate limiter ran without a test until you asked for one at 15:10<button type="button" class="{{n2Class}}" aria-label="Source 2" onClick="{{n2}}">2</button>. Three of five corrections came from things you never said, not from the agent ignoring you<button type="button" class="{{n3Class}}" aria-label="Source 3" onClick="{{n3}}">3</button>. Tomorrow, answer a stopped agent before you switch windows.</p>
-                <div class="by"><svg class="i" style="width: 14px; height: 14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>Written by the analyst agent at 18:04</div>
+            <section class="card" aria-labelledby="h-band">
+              <div class="card-h"><h2 id="h-band">Tuesday, 14 October</h2><span class="muted small">6 sessions in 4 repos · Claude Code and Codex · $20.50</span></div>
+              <div class="card-b band">
+                <div class="narr">
+                  <p>A blocked day. Agents waited on you for 47 minutes, double your median, mostly the rate-limit worktree while you were in web-dashboard<button type="button" class="{{n1Class}}" aria-label="Source 1" onClick="{{n1}}">1</button>. Verification fell: three patches to the rate limiter ran without a test until you asked for one at 15:10<button type="button" class="{{n2Class}}" aria-label="Source 2" onClick="{{n2}}">2</button>. Three of five corrections came from things you never said, not from the agent ignoring you<button type="button" class="{{n3Class}}" aria-label="Source 3" onClick="{{n3}}">3</button>. Tomorrow, answer a stopped agent before you switch windows.</p>
+                  <div class="by"><svg class="i" style="width: 14px; height: 14px" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>Written by the analyst agent at 18:04</div>
+                </div>
+                <div class="stats">
+                  <div class="stat"><div class="muted small">Unverified edits</div><div class="v">13<small>of 22</small></div><div class="d">+4 vs 7-day median of 9</div></div>
+                  <div class="stat"><div class="muted small">Blocked</div><div class="v">47<small>min</small></div><div class="d">+25 vs median of 22</div></div>
+                  <div class="stat"><div class="muted small">Corrections</div><div class="v">5</div><div class="d">+1 vs median of 4</div></div>
+                  <div class="stat"><div class="muted small">Active</div><div class="v">6.2<small>h</small></div><div class="d">+0.3 vs median of 5.9</div></div>
+                </div>
               </div>
-              <div class="stats">
-                <div class="stat"><div class="muted small">Unverified edits</div><div class="v">13<small>of 22</small></div><div class="d">+4 vs 7-day median of 9</div></div>
-                <div class="stat"><div class="muted small">Blocked</div><div class="v">47<small>min</small></div><div class="d">+25 vs median of 22</div></div>
-                <div class="stat"><div class="muted small">Corrections</div><div class="v">5</div><div class="d">+1 vs median of 4</div></div>
-                <div class="stat"><div class="muted small">Active</div><div class="v">6.2<small>h</small></div><div class="d">+0.3 vs median of 5.9</div></div>
-              </div>
-            </div>
+            </section>
 
-            <section aria-labelledby="h-day">
-              <div class="sh"><h2 id="h-day">Day by worktree</h2><span class="muted small">Hover a session for its summary</span></div>
-              <div class="tlwrap" onMouseLeave="{{clearHover}}">
-                <div class="ovlwrap"><sc-for list="{{overlaps}}" as="o" hint-placeholder-count="3"><span class="ovl" style="left: {{o.l}}%; width: {{o.w}}%"></span></sc-for></div>
-                <sc-for list="{{tlrows}}" as="r" hint-placeholder-count="10">
-                  <sc-if value="{{r.isG}}" hint-placeholder-val="{{ false }}"><div class="tlrow g"><div class="g-lbl">{{r.repo}}</div><div class="g-trk"></div></div></sc-if>
-                  <sc-if value="{{r.isS}}" hint-placeholder-val="{{ true }}"><div class="tlrow"><div class="tl-lbl"><span class="dot {{r.cls}}" aria-hidden="true"></span><span>{{r.branch}}</span><span class="muted small">{{r.agent}}</span></div><div class="track" onMouseEnter="{{r.hover}}"><button type="button" class="{{r.barCls}}" style="left: {{r.l}}%; width: {{r.w}}%" aria-label="{{r.agent}} on {{r.branch}}, {{r.span}}" onFocus="{{r.hover}}" onClick="{{r.hover}}"><span class="line {{r.cls}}"></span></button><sc-for list="{{r.ticks}}" as="k" hint-placeholder-count="0"><span class="tick" style="left: {{k.l}}%"></span></sc-for></div></div></sc-if>
-                </sc-for>
-                <div class="tlrow"><div></div><div class="axis"><sc-for list="{{hours}}" as="h" hint-placeholder-count="10"><span style="left: {{h.l}}%">{{h.t}}</span></sc-for></div></div>
-                <sc-if value="{{hasHover}}" hint-placeholder-val="{{ false }}">
-                  <div class="pop" style="top: {{pop.top}}px; left: {{pop.left}}">
-                    <span class="eyebrow">Summary by the analyst agent</span>
-                    <span style="font-weight: 600">{{pop.agent}} · {{pop.repo}} · {{pop.span}}</span>
-                    <span class="code muted">{{pop.path}}</span>
-                    <p>{{pop.sum}}</p>
-                    <button type="button" class="ulink" onClick="{{pop.ask}}">Ask about this in chat</button>
-                  </div>
-                </sc-if>
+            <section class="card ov" aria-labelledby="h-day">
+              <div class="card-h"><h2 id="h-day">Day by worktree</h2><div class="legend" style="margin: 0"><span><i class="sw c-claude"></i>Claude Code</span><span><i class="sw c-codex"></i>Codex</span><span><i class="sw-ovl"></i>Two at once</span><span><i class="sw-tick"></i>Interruption</span></div></div>
+              <div class="card-b">
+                <div class="tlwrap" onMouseLeave="{{clearHover}}">
+                  <div class="ovlwrap"><sc-for list="{{overlaps}}" as="o" hint-placeholder-count="3"><span class="ovl" style="left: {{o.l}}%; width: {{o.w}}%"></span></sc-for></div>
+                  <sc-for list="{{tlrows}}" as="r" hint-placeholder-count="10">
+                    <sc-if value="{{r.isG}}" hint-placeholder-val="{{ false }}"><div class="tlrow g"><div class="g-lbl">{{r.repo}}</div><div class="g-trk"></div></div></sc-if>
+                    <sc-if value="{{r.isS}}" hint-placeholder-val="{{ true }}"><div class="tlrow"><div class="tl-lbl"><span class="dot {{r.cls}}" aria-hidden="true"></span><span>{{r.branch}}</span><span class="muted small">{{r.agent}}</span></div><div class="track" onMouseEnter="{{r.hover}}"><button type="button" class="{{r.barCls}}" style="left: {{r.l}}%; width: {{r.w}}%" aria-label="{{r.agent}} on {{r.branch}}, {{r.span}}" onFocus="{{r.hover}}" onClick="{{r.hover}}"><span class="line {{r.cls}}"></span></button><sc-for list="{{r.ticks}}" as="k" hint-placeholder-count="0"><span class="tick" style="left: {{k.l}}%"></span></sc-for></div></div></sc-if>
+                  </sc-for>
+                  <div class="tlrow"><div></div><div class="axis"><sc-for list="{{hours}}" as="h" hint-placeholder-count="10"><span style="left: {{h.l}}%">{{h.t}}</span></sc-for></div></div>
+                  <sc-if value="{{hasHover}}" hint-placeholder-val="{{ false }}">
+                    <div class="pop" style="top: {{pop.top}}px; left: {{pop.left}}">
+                      <span class="eyebrow">Summary by the analyst agent</span>
+                      <span style="font-weight: 600">{{pop.agent}} · {{pop.repo}} · {{pop.span}}</span>
+                      <span class="code muted">{{pop.path}}</span>
+                      <p>{{pop.sum}}</p>
+                      <button type="button" class="ulink" onClick="{{pop.ask}}">Ask about this in chat</button>
+                    </div>
+                  </sc-if>
+                </div>
               </div>
-              <div class="legend"><span><i class="sw c-claude"></i>Claude Code</span><span><i class="sw c-codex"></i>Codex</span><span><i class="sw-ovl"></i>Two sessions at once</span><span><i class="sw-tick"></i>Interruption</span></div>
             </section>
 
             <div class="grid2">
               <div class="stack">
-                <section aria-labelledby="h-now">
-                  <div class="sh"><h2 id="h-now">Right now — unverified</h2><span class="muted small">Run before you push</span></div>
-                  <div>
+                <section class="card" aria-labelledby="h-now">
+                  <div class="card-h"><h2 id="h-now">Right now — unverified</h2><span class="muted small">Run before you push</span></div>
+                  <div class="card-b lines">
                     <div class="ln"><p>web-dashboard · main: toolbar spacing <button type="button" class="tlink" onClick="{{go1444}}">#1444</button></p><span class="cmd">pnpm test toolbar</span></div>
                     <div class="ln"><p>infra-terraform · main: alarm team tags <button type="button" class="tlink" onClick="{{go1457}}">#1457</button></p><span class="cmd">terraform plan</span></div>
                   </div>
                 </section>
-                <section aria-labelledby="h-cor">
-                  <div class="sh"><h2 id="h-cor">Corrections by cause</h2><span class="muted small">5 today</span></div>
-                  <div>
+                <section class="card" aria-labelledby="h-cor">
+                  <div class="card-h"><h2 id="h-cor">Corrections by cause</h2><span class="muted small">5 today</span></div>
+                  <div class="card-b lines">
                     <div class="ln"><div><p style="font-weight: 500">Information missing · 3</p><p class="muted">The idempotency key's merchant scope was never stated. Prevent with "Scope the key per merchant."</p></div><button type="button" class="tlink" onClick="{{go1430}}">#1430</button></div>
                     <div class="ln"><div><p style="font-weight: 500">Instruction violated · 1</p><p class="muted">The rate-limit patch changed the webhook path. Prevent with "Leave /webhooks alone."</p></div><button type="button" class="tlink" onClick="{{go1447}}">#1447</button></div>
                     <div class="ln"><div><p style="font-weight: 500">Unclear · 1</p><p class="muted">The judge could not tell a correction from a new requirement and abstained.</p></div><button type="button" class="tlink" onClick="{{go1444}}">#1444</button></div>
@@ -256,24 +305,26 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
                 </section>
               </div>
               <div class="stack">
-                <section aria-labelledby="h-blk">
-                  <div class="sh"><h2 id="h-blk">Worst attention window</h2><span class="muted small">13:40–14:35</span></div>
-                  <p style="margin: 0 0 14px">29 minutes blocked across two sessions, both waiting on an answer from you <button type="button" class="tlink" onClick="{{go1441}}">#1441</button></p>
-                  <div class="strip" role="img" aria-label="Agent working, waiting and idle minutes per hour, 09:00 to 18:00">
-                    <sc-for list="{{strip}}" as="h" hint-placeholder-count="9"><div class="hr"><div class="seg-i" style="height: {{h.i}}%"></div><div class="seg-w" style="height: {{h.w}}%"></div><div class="seg-a" style="height: {{h.a}}%"></div></div></sc-for>
+                <section class="card" aria-labelledby="h-blk">
+                  <div class="card-h"><h2 id="h-blk">Worst attention window</h2><span class="muted small">13:40–14:35</span></div>
+                  <div class="card-b">
+                    <p style="margin: 0 0 14px">29 minutes blocked across two sessions, both waiting on an answer from you <button type="button" class="tlink" onClick="{{go1441}}">#1441</button></p>
+                    <div class="strip" role="img" aria-label="Agent working, waiting and idle minutes per hour, 09:00 to 18:00">
+                      <sc-for list="{{strip}}" as="h" hint-placeholder-count="9"><div class="hr"><div class="seg-i" style="height: {{h.i}}%"></div><div class="seg-w" style="height: {{h.w}}%"></div><div class="seg-a" style="height: {{h.a}}%"></div></div></sc-for>
+                    </div>
+                    <div class="strip muted" style="font-size: 13px; margin-top: 4px"><sc-for list="{{strip}}" as="h" hint-placeholder-count="9"><span>{{h.t}}</span></sc-for></div>
+                    <div class="legend"><span><i class="sw seg-a"></i>Agent working</span><span><i class="sw seg-w"></i>Waiting on you</span><span><i class="sw seg-i" style="border: 1px solid var(--border)"></i>Idle</span></div>
                   </div>
-                  <div class="strip muted" style="font-size: 13px; margin-top: 4px"><sc-for list="{{strip}}" as="h" hint-placeholder-count="9"><span>{{h.t}}</span></sc-for></div>
-                  <div class="legend"><span><i class="sw seg-a"></i>Agent working</span><span><i class="sw seg-w"></i>Waiting on you</span><span><i class="sw seg-i" style="border: 1px solid var(--border)"></i>Idle</span></div>
                 </section>
-                <section aria-labelledby="h-rep">
-                  <div class="sh"><h2 id="h-rep">Pattern to repeat</h2></div>
-                  <div class="ln"><p>You asked the agent to run the refund tests and fix what failed. The fix passed on the next run.</p><button type="button" class="tlink" onClick="{{go1426}}">#1426</button></div>
+                <section class="card" aria-labelledby="h-rep">
+                  <div class="card-h"><h2 id="h-rep">Pattern to repeat</h2></div>
+                  <div class="card-b lines"><div class="ln"><p>You asked the agent to run the refund tests and fix what failed. The fix passed on the next run.</p><button type="button" class="tlink" onClick="{{go1426}}">#1426</button></div></div>
                 </section>
               </div>
             </div>
 
-            <section aria-labelledby="h-diag">
-              <div class="sh"><h2 id="h-diag">Diagnostics</h2><span class="muted small">Shown, not scored</span></div>
+            <section class="card" aria-labelledby="h-diag">
+              <div class="card-h"><h2 id="h-diag">Diagnostics</h2><span class="muted small">Shown, not scored</span></div>
               <div class="diag">
                 <div><div class="k">Overlap</div><div class="val">1 h 48 m · 29%</div></div>
                 <div><div class="k">Interruptions</div><div class="val">3 · 4 m of agent work before each</div></div>
@@ -282,18 +333,36 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
                 <div><div class="k">Most-used skill</div><div class="val">review · 3 you, 6 agent <button type="button" class="tlink" onClick="{{goLeverage}}">All</button></div></div>
               </div>
             </section>
+
+            <section class="card" aria-labelledby="h-act">
+              <div class="card-h"><h2 id="h-act">Action items</h2><span class="muted small">What to do differently, with a line for CLAUDE.md</span></div>
+              <ol class="acts">
+                <sc-for list="{{acts}}" as="a" hint-placeholder-count="4"><li class="act">
+                  <span class="actn">{{a.n}}</span>
+                  <div class="actb">
+                    <div class="acth"><span class="tag">{{a.cat}}</span><span style="font-weight: 600">{{a.title}}</span><span class="muted small">{{a.count}}</span><sc-if value="{{a.judge}}" hint-placeholder-val="{{ false }}"><span class="tag dashed" title="Judge label, not yet checked against human labels">uncalibrated</span></sc-if></div>
+                    <p class="muted" style="margin: 0">“{{a.quote}}”</p>
+                    <div class="actf">
+                      <span class="pill"><span class="code">{{a.rule}}</span><button type="button" class="copy" aria-label="Copy line for CLAUDE.md"><svg class="i" style="width: 14px; height: 14px" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></span>
+                    </div>
+                    <div class="actf"><span class="links"><sc-for list="{{a.ev}}" as="e" hint-placeholder-count="2"><button type="button" class="tlink" onClick="{{e.go}}">#{{e.id}}</button></sc-for></span><span class="muted" aria-hidden="true">·</span><button type="button" class="ulink" onClick="{{a.ask}}">Ask why</button></div>
+                  </div>
+                </li></sc-for>
+              </ol>
+            </section>
           </sc-if>
 
           <sc-if value="{{isSessions}}" hint-placeholder-val="{{ false }}">
             <sc-if value="{{noSel}}" hint-placeholder-val="{{ true }}">
-              <section aria-label="Sessions">
+              <section class="card" aria-labelledby="h-ses">
+                <div class="card-h"><h2 id="h-ses">Sessions</h2><div class="legend" style="margin: 0"><span class="muted">Tuesday 14 October · 6 sessions · 20 turns · $20.50</span><span><i class="dot v-ok"></i>Verified</span><span><i class="dot v-fail"></i>Check failed</span><span><i class="dot v-unv"></i>Unverified</span></div></div>
                 <div class="tblwrap"><table class="tbl">
-                  <thead><tr><th>Session</th><th>Worktree</th><th style="width: 34%">09:00 – 18:00</th><th class="num">Turns</th><th>Verification</th><th class="num">Blocked</th><th class="num">Cost</th></tr></thead>
+                  <thead><tr><th>Worktree</th><th style="width: 30%">Activity · 09:00–18:00</th><th>Time</th><th class="num">Turns</th><th>Verified turns</th><th class="num">Blocked</th><th class="num">Cost</th></tr></thead>
                   <tbody>
                     <sc-for list="{{sessions}}" as="s" hint-placeholder-count="6"><tr>
-                      <td><button type="button" class="rowbtn" onClick="{{s.open}}"><span class="dot {{s.cls}}" aria-hidden="true"></span>{{s.agent}} · {{s.repo}}</button></td>
-                      <td><span class="code muted">{{s.branch}}</span></td>
-                      <td><div class="mini" role="img" aria-label="{{s.span}}, {{s.nTurns}} turns"><span class="b {{s.cls}}" style="left: {{s.l}}%; width: {{s.w}}%"></span><sc-for list="{{s.tt}}" as="k" hint-placeholder-count="4"><span class="t" style="left: {{k.l}}%"></span></sc-for></div><div class="muted small">{{s.span}}</div></td>
+                      <td><button type="button" class="rowbtn" onClick="{{s.open}}"><span class="dot {{s.cls}}" aria-hidden="true"></span>{{s.repo}} <span class="muted" style="font-weight: 400">{{s.branch}}</span></button><div class="muted small" style="padding-left: 16px">{{s.agent}}</div></td>
+                      <td><div class="mini" role="img" aria-label="{{s.span}}, {{s.nTurns}} turns"><span class="b {{s.cls}}" style="left: {{s.l}}%; width: {{s.w}}%"></span><sc-for list="{{s.tt}}" as="k" hint-placeholder-count="4"><span class="t" style="left: {{k.l}}%"></span></sc-for></div></td>
+                      <td style="white-space: nowrap">{{s.span}}</td>
                       <td class="num">{{s.nTurns}}</td>
                       <td><div style="display: flex; align-items: center; gap: 10px"><span class="vbar" role="img" aria-label="{{s.vLabel}}"><span class="v-ok" style="width: {{s.okW}}%"></span><span class="v-fail" style="width: {{s.failW}}%"></span><span class="v-unv" style="width: {{s.unvW}}%"></span></span><span class="small">{{s.vText}}</span></div></td>
                       <td class="num">{{s.blocked}}</td>
@@ -301,17 +370,13 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
                     </tr></sc-for>
                   </tbody>
                 </table></div>
-                <div class="legend"><span><i class="sw v-ok"></i>Verified</span><span><i class="sw v-fail"></i>Failed</span><span><i class="sw v-unv"></i>Unverified</span><span><i class="sw-tick" style="width: 1px"></i>Turn start</span></div>
               </section>
             </sc-if>
             <sc-if value="{{hasSel}}" hint-placeholder-val="{{ false }}">
-              <section aria-label="Session detail">
-                <button type="button" class="back" onClick="{{clearSel}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>All sessions</button>
-                <div class="sh" style="margin-top: 12px">
-                  <h2><span class="dot {{sel.cls}}" style="margin-right: 8px" aria-hidden="true"></span>{{sel.agent}} · {{sel.repo}} · {{sel.span}}</h2>
-                  <span class="code muted">{{sel.path}} · {{sel.branch}}</span>
-                </div>
-                <p style="margin: 0 0 16px; max-width: 60em">{{sel.sum}}</p>
+              <button type="button" class="back" onClick="{{clearSel}}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>All sessions</button>
+              <section class="card" aria-label="Session detail">
+                <div class="card-h"><h2><span class="dot {{sel.cls}}" style="margin-right: 8px" aria-hidden="true"></span>{{sel.agent}} · {{sel.repo}} · {{sel.span}}</h2><span class="code muted">{{sel.path}} · {{sel.branch}}</span></div>
+                <div class="card-b" style="border-bottom: 1px solid var(--border)"><p style="margin: 0; max-width: 60em">{{sel.sum}}</p></div>
                 <div class="tblwrap"><table class="tbl">
                   <thead><tr><th>Turn</th><th>Start</th><th>Prompt</th><th>Tools</th><th>Verification</th><th class="num">Gap after</th></tr></thead>
                   <tbody>
@@ -319,7 +384,7 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
                       <td>#{{t.id}}</td>
                       <td>{{t.at}}</td>
                       <td>{{t.prompt}}</td>
-                      <td class="muted small" style="white-space: nowrap">{{t.tools}}</td>
+                      <td class="muted" style="white-space: nowrap">{{t.tools}}</td>
                       <td><span class="badge {{t.bcls}}">{{t.status}}</span></td>
                       <td class="num">{{t.gap}}</td>
                     </tr></sc-for>
@@ -330,27 +395,29 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
           </sc-if>
 
           <sc-if value="{{isTrends}}" hint-placeholder-val="{{ false }}">
-            <section aria-labelledby="h-tr">
-              <div class="sh"><h2 id="h-tr">Last 14 days</h2><span class="muted small">Dashed line is the 14-day median</span></div>
-              <div class="charts">
-                <sc-for list="{{charts}}" as="c" hint-placeholder-count="5"><div class="chart">
-                  <div class="head"><span>{{c.name}}</span><span style="font-weight: 600">{{c.now}}</span></div>
+            <div class="charts">
+              <sc-for list="{{charts}}" as="c" hint-placeholder-count="5"><section class="card chart">
+                <div class="card-h"><h2>{{c.name}}</h2><span style="font-weight: 600">{{c.now}}</span></div>
+                <div class="card-b">
                   <svg viewBox="0 0 300 80" preserveAspectRatio="none" role="img" aria-label="{{c.name}}, last 14 days">
                     <line x1="0" x2="300" y1="{{c.my}}" y2="{{c.my}}" stroke="currentColor" stroke-opacity=".35" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"></line>
                     <polyline points="{{c.pts}}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"></polyline>
                   </svg>
-                  <div class="muted" style="display: flex; justify-content: space-between; font-size: 13px; margin-top: 4px"><span>1 Oct</span><span>14 Oct</span></div>
-                </div></sc-for>
-                <div class="chart">
-                  <div class="head"><span>Corrections by cause</span><span style="font-weight: 600">5</span></div>
+                  <div class="muted" style="display: flex; justify-content: space-between; font-size: 13px; margin-top: 4px"><span>1 Oct</span><span>dashed: 14-day median</span><span>14 Oct</span></div>
+                </div>
+              </section></sc-for>
+              <section class="card chart">
+                <div class="card-h"><h2>Corrections by cause</h2><span style="font-weight: 600">5</span></div>
+                <div class="card-b">
                   <div class="cols" role="img" aria-label="Corrections per day by cause, last 14 days">
                     <sc-for list="{{ccols}}" as="d" hint-placeholder-count="14"><div class="colstack"><div class="seg-i" style="height: {{d.o}}px; border-top: 1px solid var(--border)"></div><div class="seg-w" style="height: {{d.v}}px"></div><div class="seg-a" style="height: {{d.m}}px"></div></div></sc-for>
                   </div>
                   <div class="legend" style="margin-top: 6px"><span><i class="sw seg-a"></i>Info missing</span><span><i class="sw seg-w"></i>Instruction violated</span><span><i class="sw seg-i" style="border: 1px solid var(--border)"></i>Other</span></div>
                 </div>
-              </div>
-            </section>
-            <section aria-label="Daily values">
+              </section>
+            </div>
+            <section class="card" aria-labelledby="h-days">
+              <div class="card-h"><h2 id="h-days">Last 7 days</h2></div>
               <div class="tblwrap"><table class="tbl">
                 <thead><tr><th>Day</th><th class="num">Verified</th><th class="num">Hand repair</th><th class="num">Blocked</th><th class="num">Corrections</th><th class="num">Active</th><th class="num">Cost</th></tr></thead>
                 <tbody>
@@ -365,16 +432,16 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
           <sc-if value="{{isLeverage}}" hint-placeholder-val="{{ false }}">
             <p class="muted" style="margin: 0">Context for the scored numbers. These depend on the agent and are easy to game, so they never count.</p>
             <div class="grid2">
-              <section aria-labelledby="h-tool">
-                <div class="sh"><h2 id="h-tool">Most-used tooling</h2><div class="segc" role="group" aria-label="Category"><sc-for list="{{cats}}" as="c" hint-placeholder-count="4"><button type="button" class="{{c.cls}}" aria-pressed="{{c.on}}" onClick="{{c.pick}}">{{c.label}}</button></sc-for></div></div>
-                <div style="border-top: 1px solid var(--border)">
+              <section class="card" aria-labelledby="h-tool">
+                <div class="card-h"><h2 id="h-tool">Most-used tooling</h2><div class="segc" role="group" aria-label="Category"><sc-for list="{{cats}}" as="c" hint-placeholder-count="4"><button type="button" class="{{c.cls}}" aria-pressed="{{c.on}}" onClick="{{c.pick}}">{{c.label}}</button></sc-for></div></div>
+                <div class="card-b">
                   <sc-for list="{{tools}}" as="k" hint-placeholder-count="5"><div class="sk"><span class="code">{{k.name}}</span><span class="skbar"><span class="sk-you" style="width: {{k.yw}}%"></span><span class="sk-agent" style="width: {{k.aw}}%"></span></span><span class="cnt">{{k.you}} you · {{k.agent}} agent</span></div></sc-for>
+                  <div class="legend"><span><i class="sw sk-you"></i>Started by you</span><span><i class="sw sk-agent"></i>Started by the agent</span></div>
+                  <p class="note">Hooks and CLAUDE.md / AGENTS.md started 39 more calls on their own. Those count as default.</p>
                 </div>
-                <div class="legend"><span><i class="sw sk-you"></i>Started by you</span><span><i class="sw sk-agent"></i>Started by the agent</span></div>
-                <p class="note">Hooks and CLAUDE.md / AGENTS.md started 39 more calls on their own. Those count as default.</p>
               </section>
-              <section aria-labelledby="h-sub">
-                <div class="sh"><h2 id="h-sub">Subagents</h2><span class="muted small">13 runs · deepest nesting 2</span></div>
+              <section class="card" aria-labelledby="h-sub">
+                <div class="card-h"><h2 id="h-sub">Subagents</h2><span class="muted small">13 runs · deepest nesting 2</span></div>
                 <div class="tblwrap"><table class="tbl">
                   <thead><tr><th>Subagent</th><th class="num">Runs</th><th>Started by</th><th class="num">Median time</th></tr></thead>
                   <tbody>
@@ -383,12 +450,13 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
                     <tr><td>code-reviewer</td><td class="num">2</td><td>you 2</td><td class="num">2 m 20 s</td></tr>
                   </tbody>
                 </table></div>
-                <p class="note">22 minutes of subagent time ran alongside the parent session.</p>
+                <div class="card-b" style="border-top: 1px solid var(--border)"><p class="note" style="margin: 0">22 minutes of subagent time ran alongside the parent session.</p></div>
               </section>
             </div>
           </sc-if>
         </div>
       </main>
+      </div>
 
       <aside class="{{asideClass}}" aria-label="Ask AI" aria-hidden="{{asideHidden}}">
         <div class="ain">
@@ -478,7 +546,7 @@ h2{font-size:16px;font-weight:600;line-height:1.4;margin:0}
 </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["auto","light","dark"],"default":"auto"},"chat":{"editor":"enum","options":["conversation","empty","no-key"],"default":"conversation"},"askOpen":{"editor":"boolean","default":true},"$preview":{"width":1440,"height":1500}}'>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["auto","light","dark"],"default":"auto"},"chat":{"editor":"enum","options":["conversation","empty","no-key"],"default":"conversation"},"askOpen":{"editor":"boolean","default":true},"$preview":{"width":1440,"height":2100}}'>
 class Component extends DCLogic {
   constructor(props) {
     super(props);
@@ -613,6 +681,13 @@ class Component extends DCLogic {
       12: { title: 'Turn #1451', path: 'billing-api · feat/rate-limit · Codex · 15:10', quote: '"Run pnpm test rate-limit and fix it"', detail: 'First test run after three patches. Passed after one fix.', turn: 1451 },
       13: { title: 'Turn #1430', path: 'billing-api · main · Claude Code · 11:21', quote: '"The key is per merchant, not per user"', detail: 'Judge: correction · cause: information missing · caught by you', turn: 1430 }
     };
+    const acts = [
+      { n: 1, cat: 'Verification', title: 'Edits left without a test', count: '4 times', judge: false, quote: 'Port the rate limiter to a token bucket', rule: 'After any code change, run the nearest test suite before you reply.', ev: [1441, 1445, 1447] },
+      { n: 2, cat: 'Blocked agent', title: 'Agent waited on your answer', count: '3 times · 38 min', judge: false, quote: 'Should the limits live in config.ts or in env vars?', rule: 'If you need a decision, ask once, then continue with the safer default and say which one you chose.', ev: [1441, 1422] },
+      { n: 3, cat: 'Missing context', title: 'Requirement never stated', count: '3 times', judge: true, quote: 'The key is per merchant, not per user', rule: 'billing-api: idempotency keys are scoped per merchant.', ev: [1430, 1436] },
+      { n: 4, cat: 'Scope', title: 'Agent changed code you did not ask about', count: 'once', judge: true, quote: 'That broke the webhook path, roll it back', rule: 'Never modify /webhooks unless the prompt names it.', ev: [1447] }
+    ].map((a) => Object.assign(a, { ev: a.ev.map((id) => ({ id: id, go: goTurn(id) })), ask: () => this.setState({ ask: true, peek: 0, hover: null, draft: 'Why is "' + a.title + '" on my action items today?' }) }));
+    const tabLabel = { today: 'Today', sessions: 'Sessions', trends: 'Trends', leverage: 'Leverage' }[tab];
     const pk = peeks[this.state.peek] || peeks[1];
     const cite = (n) => () => this.setState({ peek: n, ask: true });
     const cc = (n) => this.state.peek === n ? 'cite on' : 'cite';
@@ -627,7 +702,7 @@ class Component extends DCLogic {
       asideClass: askOpen ? 'aside open' : 'aside',
       asideHidden: askOpen ? 'false' : 'true',
       toggleAsk: () => this.setState({ ask: !askOpen }),
-      tabs: tabs,
+      tabs: tabs, tabLabel: tabLabel, acts: acts,
       isToday: tab === 'today', isSessions: tab === 'sessions', isTrends: tab === 'trends', isLeverage: tab === 'leverage',
       sessions: sessions, tlrows: tlrows, overlaps: overlaps, hours: hours, strip: strip, charts: charts, ccols: ccols, days: days,
       tools: tools, cats: cats,
