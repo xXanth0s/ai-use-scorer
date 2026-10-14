@@ -430,6 +430,56 @@ def bash_edit_paths(cmd: str) -> list[str]:
     return list(_bash_edit_paths(cmd or ""))
 
 
+# Files written by an inline Python script (`python3 - <<'EOF' … open(p, "w") …`, `python -c "…"`): agents
+# edit this way often, and missing them turned agent edits into "hand edits" in H.
+_PY_HEAD = re.compile(r"\b(?:python(?:\d+(?:\.\d+)?)?|uv\s+run\s+(?:[\w=./-]+\s+)*?python\w*)\b[^\n]*?<<-?\s*(['\"]?)"
+                      r"([A-Za-z_]\w*)\1[^\n]*\n")
+_PY_C = re.compile(r"\bpython(?:\d+(?:\.\d+)?)?\s+-c\s+(\"(?:[^\"\\]|\\.)*\"|'[^']*')")
+_ASSIGN = re.compile(r"\b([A-Za-z_]\w*)\s*=\s*(?:Path\(|pathlib\.Path\()?r?(['\"])([^'\"\n]{1,300})\2")
+_OPEN_W = re.compile(r"\bopen\(\s*(?:(['\"])([^'\"\n]{1,300})\1|([A-Za-z_]\w*))\s*,\s*(?:mode\s*=\s*)?[rf]?['\"]"
+                     r"[rbt+]*[wax]")
+_WRITE_TEXT = re.compile(r"(?:Path\(\s*(?:(['\"])([^'\"\n]{1,300})\1|([A-Za-z_]\w*))\s*\)|\b([A-Za-z_]\w*))"
+                         r"\.write_(?:text|bytes)\(")
+
+
+_CD = re.compile(r"(?:^|&&|;|\n)\s*cd\s+(['\"]?)([^'\"\s;&|]+)\1\s*(?=&&|;|\n)")
+
+
+def _script_bodies(cmd: str) -> list[tuple[str | None, str]]:
+    """(cd dir in effect, script body) per inline Python script."""
+    out = []
+    heads = [(m.start(), m.end(), m.group(2)) for m in _PY_HEAD.finditer(cmd)]
+    heads += [(m.start(), None, m.group(1)[1:-1]) for m in _PY_C.finditer(cmd)]
+    for start, end, x in heads:
+        cds = [c.group(2) for c in _CD.finditer(cmd[:start] + "\n")]
+        cwd = cds[-1] if cds else None
+        if end is None:
+            out.append((cwd, x))
+            continue
+        stop = re.search(rf"(?m)^\s*{re.escape(x)}\s*$", cmd[end:])
+        out.append((cwd, cmd[end:end + stop.start()] if stop else cmd[end:]))
+    return out
+
+
+def _script_write_paths(cmd: str) -> list[str]:
+    if "python" not in cmd or ("open(" not in cmd and ".write_" not in cmd):
+        return []
+    res: list[str] = []
+    for cwd, body in _script_bodies(cmd):
+        assigns = [(m.start(), m.group(1), m.group(3)) for m in _ASSIGN.finditer(body)]
+
+        def val(name, pos):   # the variable's latest literal assignment before pos
+            v = [lit for at, n, lit in assigns if n == name and at < pos]
+            return v[-1] if v else ""
+        found = []
+        for m in _OPEN_W.finditer(body):
+            found.append(m.group(2) or val(m.group(3) or "", m.start()))
+        for m in _WRITE_TEXT.finditer(body):
+            found.append(m.group(2) or val(m.group(3) or m.group(4) or "", m.start()))
+        res += [_join(cwd, p) for p in found if p and not p.startswith(("/dev/", "-")) and "{" not in p]
+    return res
+
+
 @lru_cache(maxsize=65536)
 def _bash_edit_paths(cmd: str) -> tuple:
     out: list[str] = []
@@ -475,6 +525,7 @@ def _bash_edit_paths(cmd: str) -> tuple:
         elif h in ("rm", "mkdir", "touch", "rmdir", "truncate"):
             paths = pos
         out += [_join(seg.cwd, p) for p in paths if p]
+    out += _script_write_paths(cmd)
     seen, res = set(), []
     for p in out:
         if p not in seen:
@@ -640,7 +691,7 @@ def _is_relevant(test_cmd: str, test_cwd: str | None, edited_paths: tuple) -> st
 # --- human verification request (initiator rule 3) ---------------------------------------------
 # Only an explicit request to RUN checks credits the check to the human: a run verb next to a check
 # noun, a "make sure it passes", or German equivalents. "write tests" / "don't run anything" do not.
-_CHECK_NOUN = (r"(?:test[- ]?suites?|testsuite|tests?|specs?|pytest|vitest|jest|mocha|unit[- ]tests?|e2e|"
+_CHECK_NOUN = (r"(?:test[- ]?suites?|testsuite|suites?|tests?|specs?|pytest|vitest|jest|mocha|unit[- ]tests?|e2e|"
                r"builds?|lint(?:er|ing)?|typecheck(?:s|ing)?|type[- ]check(?:s|ing)?|tsc|mypy|checks|ci)")
 # up to 4 words between verb and noun ("run the full test suite"), but not across "and write"/"then add"
 _GAP = (r"(?:[\s,:]+(?!(?:and|then|or|write|add|create|und|dann|oder|schreib\w*)\b)[\w./:@'`-]+){0,4}?"
@@ -648,7 +699,14 @@ _GAP = (r"(?:[\s,:]+(?!(?:and|then|or|write|add|create|und|dann|oder|schreib\w*)
 _CHECK_RX = re.compile("|".join([
     rf"\b(?:re-?)?run(?:s|ning)?\b{_GAP}`?{_CHECK_NOUN}\b",
     rf"\b(?:execute|exec|kick off|launch|trigger)\b{_GAP}`?{_CHECK_NOUN}\b",
-    rf"\b(?:verify|check|confirm|ensure)\b{_GAP}(?:the |all )?{_CHECK_NOUN}\b",
+    rf"\b(?:verify|check|confirm|ensure|validate)\b{_GAP}(?:the |all )?{_CHECK_NOUN}\b",
+    # "make some test runs", "do a quick test run", "start a build"
+    rf"\b(?:make|do|perform|start)\b{_GAP}(?:test|build|ci)[- ]?runs?\b",
+    rf"\b(?:make|do|perform|start|kick off)\b(?:\s+(?:a|another|some|the|full|quick|clean))*\s+builds?\b",
+    # bare English verb "test" + object: "test it", "can you test the hooks", "subagents to test it"
+    r"(?<!\ba )(?<!\ban )(?<!\bthe )(?<!\bunit )(?<!\bnew )(?<!\bsome )(?<!\bwrite )(?<!\badd )"
+    r"(?<!\bcreate )(?<!\bfor )(?<!\bfailing )(?<!\be2e )(?<!\bsmoke )\btest\s+"
+    r"(?:it|this|that|them|these|those|everything|all|your\s+\w+|the\s+\w+|my\s+\w+)\b(?!\s+(?:for|that|which|case|cases|file|files|fixture|data)\b)",
     r"\b(?:make sure|ensure|verify|check|confirm)\b(?:\s+(?:that|it|they|all|the|everything|tests?|build|"
     r"it's|still))*\s+(?:pass(?:es|ing)?|(?:is |are |stays? )?green|builds?|compiles?|works?)\b",
     r"\b(?:lint|typecheck|type-check)\s+(?:the|it|this|everything|all)\b",

@@ -240,6 +240,26 @@ def test_summarize_command():
     ("Run the CLI and write tests", None),
     ("the test run was slow, speed it up", None),
     ("Don't run anything. Then run pytest.", "run pytest"),     # negation is clause-scoped
+    # real phrasings, paraphrased: question-form asks and bare "test" + object
+    ("do you check the hooks too and make a few test runs to validate the code", "make a few test runs"),
+    ("are you testing it in parallel? do you test the endpoints too", "test the endpoints"),
+    ("when the harness is ready, could you start subagents to test it", "test it"),
+    ("please test everything before you stop", "test everything"),
+    ("do a quick build to see it compiles", "do a quick build"),
+    ("run the suite", "run the suite"),
+    ("verify with pytest", "verify with pytest"),
+    ("validate the build output", "validate the build"),
+    ("1. fix the parser\n2. run the tests\n3. summarize", "run the tests"),
+    ("check that it builds", "check that it builds"),
+    ("make sure tests pass", "make sure tests pass"),
+    # not a run request: setup ideas, bug reports, writing tests
+    ("for testing you could set up a few workspaces and make toy projects later", None),
+    ("in the dashboard I see fewer numbers than before [screenshot]", None),
+    ("write a test for it", None),
+    ("add a unit test that covers this", None),
+    ("the test the parser uses is flaky", None),
+    ("we need new test data", None),
+    ("do not test it", None),
 ])
 def test_human_check_request(text, span):
     assert classify.human_check_request(text) == span
@@ -264,3 +284,21 @@ def test_noise_edit_path_respects_session_cwd():
     assert classify.noise_edit_path("/tmp/r/.", "/tmp/r")
     assert not classify.noise_edit_path("/tmp/r/a.py", "/tmp/r")        # a session that lives in /tmp
     assert classify.noise_edit_path("/private/tmp/claude-501/s/scratchpad/a.py", "/Users/x/repo")
+
+
+@pytest.mark.parametrize("cmd,paths", [
+    ("uv run python - <<'EOF'\np = \"src/pkg/mod.py\"\ns = open(p).read()\nopen(p, \"w\").write(s)\nEOF", ["src/pkg/mod.py"]),
+    ("python3 - <<'EOF'\np='a/b.py'; s=open(p).read()\nopen(p,'w').write(s)\nEOF\ngit diff", ["a/b.py"]),
+    ("python3 -c \"from pathlib import Path; Path('n.txt').write_text('x')\"", ["n.txt"]),
+    ("python3 - <<EOF\nwith open('o.json', mode='w') as f: f.write('1')\nprint(open('i.txt').read())\nEOF", ["o.json"]),
+    ("uv run python - <<'EOF'\nimport json\nprint(json.load(open('x.json')))\nEOF", []),    # read only
+])
+def test_inline_python_write_paths(cmd, paths):
+    """Agents often edit through inline Python; those writes must be FileEdits or H counts them as yours."""
+    assert classify.bash_edit_paths(cmd) == paths
+
+
+def test_inline_python_paths_follow_cd_and_reassignment():
+    cmd = ("cd /r/web/static && python3 - <<'EOF'\np = 'app.css'\ns = open(p).read()\nopen(p, 'w').write(s)\n"
+           "p = 'app.js'\nopen(p, 'w').write('x')\nEOF")
+    assert classify.bash_edit_paths(cmd) == ["/r/web/static/app.css", "/r/web/static/app.js"]

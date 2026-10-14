@@ -69,6 +69,8 @@ Verify:     batch = maximal run of FileEdit not split by a prompt or test|build 
             tier (v2): the LAST relevant check in the window decides: failed -> verified_fail,
                   passed -> verified_pass (recovered = an earlier one in the window failed: red -> green,
                   counted in V_recovered) | inspected (git diff / Read of edited file) | none
+            TDD red (`cat > test ; pytest` failing, then the lane's next batch ends green) -> pass, recovered
+            subagent lane = its sidechain across turns; unchecked there -> parent's checks after it finished
             final = last batch verified AND no later FileEdit
 ```
 

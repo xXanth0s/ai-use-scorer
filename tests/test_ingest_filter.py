@@ -113,3 +113,16 @@ def test_config_override(env, monkeypatch, tmp_path):
     _run(ingest, conn, exclude_cwd=pats)
     # /srv/work/* excluded; the built-in lab patterns no longer apply
     assert _ids(conn) == sorted(set(LAB) | {"none"})
+
+
+def test_prefix_run_never_purges_sessions_outside_prefix(env, monkeypatch, tmp_path):
+    """Lab run4 ingest with --cwd-prefix .../run4 wiped run2's sessions from the lab DB."""
+    from scorer.db import connect
+    run2 = {"r2a": f"{HOME}/scorer-lab/run2/lab-a", "r2b": f"{HOME}/scorer-lab/run2/lab-b"}
+    run4 = {"r4a": f"{HOME}/scorer-lab/run4/lab-a"}
+    conn = connect(tmp_path / "lab.db")
+    ingest = _fake(monkeypatch, run2)
+    _run(ingest, conn, cwd_prefixes=[f"{HOME}/scorer-lab/run2"], exclude_cwd=ingest.default_exclude_patterns())
+    ingest = _fake(monkeypatch, {**run2, **run4})
+    _run(ingest, conn, cwd_prefixes=[f"{HOME}/scorer-lab/run4"], exclude_cwd=ingest.default_exclude_patterns())
+    assert _ids(conn) == ["r2a", "r2b", "r4a"]

@@ -226,9 +226,11 @@ def _is_excluded(cwd: str | None, exclude: list[str], prefixes: list[str]) -> bo
 
 
 def purge_excluded(conn: sqlite3.Connection, exclude: list[str], prefixes: list[str]) -> int:
-    """Delete stored sessions (and children) that the exclusion now covers. judge_label rows stay."""
+    """Delete stored sessions (and children) that the exclusion now covers. judge_label rows stay.
+    With a --cwd-prefix (lab mode) this run only looked at sessions under the prefix: sessions outside it
+    (earlier lab runs in a lab DB) are none of its business and are never purged."""
     ids = [r[0] for r in conn.execute("SELECT id, cwd FROM session").fetchall()
-           if _is_excluded(r[1], exclude, prefixes)]
+           if _is_excluded(r[1], exclude, prefixes) and not (prefixes and not cwd_matches(r[1], prefixes))]
     with conn:
         for sid in ids:
             delete_session(conn, sid)

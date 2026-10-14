@@ -332,12 +332,12 @@ def test_abandoned_prompt_fixture_is_an_interrupt():
     """Esc before the first assistant output writes no marker: the resubmitted prompt follows."""
     b = fx("abandoned_prompt.jsonl")
     t = b.turns
-    assert kinds(b) == ["prompt", "prompt", "prompt", "command", "command"]
+    assert kinds(b) == ["prompt", "prompt", "prompt", "command"]     # trailing /exit: no turn, only an event
     assert t[1].interrupted and t[1].end_source == "interrupt" and t[1].agent_started_at is None
     assert t[1].agent_finished_at == t[1].prompt_at          # zero agent time thrown away
     assert not t[0].interrupted and not t[2].interrupted and t[2].end_source == "turn_duration"
-    # the trailing /exit has no follow-up prompt and is a command: never an abandoned prompt
-    assert not t[4].interrupted
+    assert not t[3].interrupted
+    assert [e.data["name"] for e in b.events if e.kind == "command_builtin"][-1] == "exit"
 
 
 def test_abandoned_needs_follow_up_within_window(tmp_path):
@@ -416,3 +416,104 @@ def test_session_start_snapshot_is_a_baseline():
     b = parse(path, hooks)
     snaps = [e for e in b.events if e.kind == "git_snapshot"]
     assert len(snaps) == 1 and snaps[0].data["baseline"] is True
+
+
+# --- initiator of subagent tool calls -------------------------------------------------------------
+# Real case (paraphrased): turn N "can you also start subagents to test it"; the subagents ran pytest
+# minutes later, inside the window of turn N+1 ("ui shows fewer metrics [screenshot]"). The run was asked
+# for in turn N, so it is the human's; before the fix it took turn N+1's prompt and became rule 5.
+
+def _sub_session(tmp_path, prompts, spawns, subs):
+    """prompts: [(ts, text)]; spawns: [(ts, tool_use_id)] Agent calls in the main thread;
+    subs: {agent_id: (toolUseId, [(ts, tool_use_id, command)])} subagent transcripts."""
+    sid = "00000000-0000-4000-8000-0000000000c1"
+    base = {"sessionId": sid, "cwd": "/tmp/r", "isSidechain": False}
+    rows = []
+    for i, (t, text) in enumerate(prompts):
+        rows.append({**base, "type": "user", "uuid": f"u{i}", "timestamp": t, "promptId": f"p{i}",
+                     "origin": {"kind": "human"}, "message": {"role": "user", "content": text}})
+        for st, tu in spawns:
+            if st.startswith(t[:16]):
+                rows.append({**base, "type": "assistant", "uuid": f"a{tu}", "timestamp": st, "requestId": f"r{tu}",
+                             "message": {"model": "claude-opus-5-5", "usage": {"output_tokens": 1},
+                                         "content": [{"type": "tool_use", "id": tu, "name": "Agent",
+                                                      "input": {"prompt": "x", "run_in_background": True}}]}})
+    p = tmp_path / f"{sid}.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    sdir = tmp_path / sid / "subagents"
+    sdir.mkdir(parents=True)
+    for aid, (link, calls) in subs.items():
+        sb = {"sessionId": sid, "cwd": "/tmp/r", "isSidechain": True, "agentId": aid}
+        lines = [{**sb, "type": "user", "uuid": f"{aid}-0", "timestamp": calls[0][0],
+                  "message": {"role": "user", "content": "task"}}]
+        for t, tu, cmd in calls:
+            lines.append({**sb, "type": "assistant", "uuid": f"{aid}-{tu}", "timestamp": t, "requestId": f"r{tu}",
+                          "message": {"model": "claude-opus-5-5", "usage": {"output_tokens": 1},
+                                      "content": [{"type": "tool_use", "id": tu, "name": "Agent" if not cmd else "Bash",
+                                                   "input": {"command": cmd} if cmd else {"prompt": "y"}}]}})
+        (sdir / f"agent-{aid}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in lines))
+        (sdir / f"agent-{aid}.meta.json").write_text(json.dumps({"toolUseId": link, "agentType": "general-purpose"}))
+    return parse(str(p))
+
+
+def test_subagent_check_takes_spawning_turns_request(tmp_path):
+    b = _sub_session(
+        tmp_path,
+        [("2026-10-01T08:00:00Z", "once the harness works, can you also start subagents to test it"),
+         ("2026-10-01T08:10:00Z", "in the dashboard I see fewer numbers than before [screenshot]")],
+        [("2026-10-01T08:00:30Z", "toolu_spawn")],
+        {"aaa1": ("toolu_spawn", [("2026-10-01T08:12:00Z", "tb1", "uv run pytest -q")])})
+    tc = next(c for c in b.tool_calls if c.tool_use_id == "tb1")
+    assert tc.turn_idx == 1                      # timing stays with the turn active at the time
+    assert tc.initiator == "human" and tc.initiator_rule == "3:prompt:test it"
+
+
+def test_subagent_check_spawned_without_request_stays_agent(tmp_path):
+    # inverse: request-free spawn, a later prompt asks for tests -> the subagent never saw that prompt
+    b = _sub_session(
+        tmp_path,
+        [("2026-10-01T08:00:00Z", "rework the sessions view, it looks off"),
+         ("2026-10-01T08:10:00Z", "and run the test suite when you are done")],
+        [("2026-10-01T08:00:30Z", "toolu_spawn")],
+        {"aaa1": ("toolu_spawn", [("2026-10-01T08:12:00Z", "tb1", "uv run pytest -q")])})
+    tc = next(c for c in b.tool_calls if c.tool_use_id == "tb1")
+    assert tc.turn_idx == 1 and (tc.initiator, tc.initiator_rule) == ("agent", "5")
+
+
+def test_nested_subagent_inherits_root_spawning_turn(tmp_path):
+    # child file sorts before its parent file: parents must still be parsed first
+    b = _sub_session(
+        tmp_path,
+        [("2026-10-01T08:00:00Z", "lass die tests laufen, use helpers if needed"),
+         ("2026-10-01T08:10:00Z", "what's the status?")],
+        [("2026-10-01T08:00:30Z", "toolu_spawn")],
+        {"zzz9": ("toolu_spawn", [("2026-10-01T08:01:00Z", "toolu_child", None)]),
+         "aaa1": ("toolu_child", [("2026-10-01T08:11:00Z", "tb1", "pytest -q")])})
+    tc = next(c for c in b.tool_calls if c.tool_use_id == "tb1")
+    assert tc.sidechain_id == "aaa1" and tc.turn_idx == 1
+    assert tc.initiator == "human"
+
+
+def test_exit_command_is_not_a_turn(tmp_path):
+    """Lab teardown: `/exit` became a human command turn. Session-ending builtins only leave an event."""
+    sid = "00000000-0000-4000-8000-0000000000e1"
+    base = {"sessionId": sid, "cwd": "/tmp/r", "isSidechain": False}
+    rows = [
+        {**base, "type": "user", "uuid": "u1", "timestamp": "2026-10-01T08:00:00Z", "promptId": "p1",
+         "origin": {"kind": "human"}, "message": {"role": "user", "content": "add a flag"}},
+        {**base, "type": "assistant", "uuid": "a1", "timestamp": "2026-10-01T08:00:03Z", "requestId": "r1",
+         "message": {"model": "claude-opus-5-5", "usage": {"output_tokens": 1},
+                     "content": [{"type": "text", "text": "done"}]}},
+        {**base, "type": "user", "uuid": "u2", "timestamp": "2026-10-01T08:05:00Z",
+         "message": {"role": "user", "content": "<command-name>/exit</command-name>\n<command-message>exit"
+                                                 "</command-message>\n<command-args></command-args>"}},
+        {**base, "type": "user", "uuid": "u3", "timestamp": "2026-10-01T08:05:00Z",
+         "message": {"role": "user", "content": "<local-command-stdout>Bye!</local-command-stdout>"}},
+    ]
+    p = tmp_path / f"{sid}.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    b = parse(str(p))
+    assert [t.prompt_kind for t in b.turns] == ["prompt"]
+    assert not b.turns[0].agent_finished_at.startswith("2026-10-01T08:05")   # teardown does not stretch it
+    ev = [e for e in b.events if e.kind == "command_builtin"]
+    assert [(e.data["name"], e.turn_idx) for e in ev] == [("exit", 0)]

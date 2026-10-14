@@ -26,7 +26,7 @@ Metric ids written (day scope unless noted; also "all" scope for the headline se
   active_s, overlap_s, parallel_s, turns, sessions,
   gap_bucket:<lt30s|30s-2m|2-5m|5-15m|break>, gap_median_s, switch_share,
   interrupts, thrown_s, queued_prompts,
-  V, V_fail_share, V_final, V_human, V_tier:<verified_pass|verified_fail|inspected|none>,
+  V, V_fail_share, V_final, V_human, V_recovered, V_tier:<verified_pass|verified_fail|inspected|none>,
   H (unit "edits" or "edits(partial)"), H_repair, H_own,
   B_min,
   context_p50, context_p90 (percent of window), tokens_in, tokens_cached, tokens_out,
@@ -361,7 +361,8 @@ class Batch:
     verifier_call_id: int | None = None
     verifier_initiator: str | None = None
     relevance: str | None = None
-    followed_by_edit: bool = False         # another batch later in the same turn
+    followed_by_edit: bool = False         # another batch later in the same turn and lane
+    recovered: bool = False                # verified_pass after an earlier relevant check failed (red -> green)
     final: bool = False                    # last batch of its session (in scope) and verified
     order: tuple = field(default=(), repr=False)
 
@@ -441,60 +442,127 @@ def _mentions(arg: str | None, paths: list[str]) -> bool:
     return any(p and (p in a or os.path.basename(p) in a.split()) for p in paths)
 
 
+def _lane_batches(lane: list[tuple], fe: dict) -> list[list]:
+    """lane: [(ti, t, i, call)] in time order -> [[batch, lane pos where it starts, lane pos where checks count]]."""
+    batches: list[list] = []
+    cur: Batch | None = None
+    for k, (ti, t, i, c) in enumerate(lane):
+        if _is_v_edit(c, fe, t):
+            if cur is None:
+                cur = Batch(t["session_id"], t["id"], t["day"], [], [], c["id"], order=(ti, i))
+                batches.append([cur, k, k + 1])
+            cur.edit_call_ids.append(c["id"])
+            cur.last_edit_call_id = c["id"]
+            for p in _v_paths(c, fe, t) or _edit_paths(c, fe):
+                if p not in cur.paths:
+                    cur.paths.append(p)
+            batches[-1][2] = k + 1
+        elif _is_check(c):
+            cur = None
+            # `cat > f <<EOF … && pytest`: one call edits, then checks -> its own batch, checked by itself
+            own = [r["path"] for r in fe.get(c["id"], []) if r["path"]
+                   and classify.v_edit_path(r["path"], _roots(t))]
+            if own and classify.edit_precedes_check(c["args_summary"] or ""):
+                b = Batch(t["session_id"], t["id"], t["day"], [c["id"]], list(dict.fromkeys(own)), c["id"],
+                          order=(ti, i))
+                batches.append([b, k, k])
+    return batches
+
+
+def _judge_window(b: Batch, window: list[tuple], fe: dict, t: dict) -> None:
+    """Tier from the LAST relevant check with a result in the window; recovered = an earlier one failed."""
+    inspected = None
+    failed_before = False
+    for _ti, _t, _i, c in window:
+        if _is_check(c):
+            if not c["has_result"]:
+                continue
+            rel = classify.is_relevant(c["args_summary"] or "", t["s_cwd"], b.paths)
+            if rel:
+                failed_before = failed_before or b.tier == "verified_fail"
+                b.tier = "verified_fail" if c["is_error"] else "verified_pass"
+                b.verifier_call_id, b.verifier_initiator, b.relevance = c["id"], c["initiator"], rel
+        elif inspected is None and not _is_v_edit(c, fe, t):
+            if c["kind"] == "read" and _mentions(c["args_summary"], b.paths):
+                inspected = c
+            elif c["kind"] == "bash" and c["bash_intent"] == "git" and \
+                    classify.bash_git_subkind(c["args_summary"] or "") == "read" and \
+                    "diff" in (c["args_summary"] or ""):
+                inspected = c
+    b.recovered = failed_before and b.tier == "verified_pass"
+    if b.tier == "none" and inspected is not None:
+        b.tier, b.verifier_call_id = "inspected", inspected["id"]
+
+
+def _tdd_red(bl: list[list]) -> None:
+    """TDD red phase: a batch whose own call wrote the test and ran it red (`cat > test … ; pytest`), followed
+    in its lane by an edit batch that ends green, is recovered (pass), not a failed check."""
+    for bi, (b, start, scan_from) in enumerate(bl[:-1]):
+        nb = bl[bi + 1][0]
+        if b.tier == "verified_fail" and start == scan_from and nb.tier == "verified_pass":
+            b.tier, b.recovered = "verified_pass", True
+            b.verifier_call_id, b.verifier_initiator, b.relevance = \
+                nb.verifier_call_id, nb.verifier_initiator, nb.relevance
+
+
 def verification_batches(conn, day: str | None = None) -> list[Batch]:
+    """Edit batches per lane: the main thread of each turn, and each subagent sidechain (across the turns its
+    calls fall into by time; the batch belongs to the turn of its first edit). Lanes never interleave, so a
+    subagent's red/green does not flip the parent's batch. A batch's window runs from its last edit to the
+    lane's next batch (main lane: or the end of the turn = next prompt). Tier = the LAST relevant check with
+    a result in that window: failed -> verified_fail, passed -> verified_pass (recovered when an earlier
+    relevant check there failed: red -> green; also a TDD red step, see _tdd_red). A subagent batch its own lane never checked falls back to the
+    parent's checks after the subagent's last call (same window rule in the parent's lane).
+    No relevant check -> inspected (Read / git diff of an edited path in the window) or none."""
     turns = _turns(conn)
     calls = _calls_by_turn_c(conn)
     fe = _file_edits(conn)
     out: list[Batch] = []
+    mains: dict[int, list[tuple]] = {}            # turn id -> main lane
+    sides: dict[tuple, list[tuple]] = {}          # (session, sidechain) -> lane across turns
     for ti, t in enumerate(turns):
         if day and t["day"] != day:
             continue
-        lst = calls.get(t["id"], [])
-        cwd = t["s_cwd"]
-        batches: list[tuple[Batch, int]] = []   # (batch, index where the verifier scan starts)
-        cur: Batch | None = None
-        for i, c in enumerate(lst):
-            if _is_v_edit(c, fe, t):
-                if cur is None:
-                    cur = Batch(t["session_id"], t["id"], t["day"], [], [], c["id"], order=(ti, i))
-                    batches.append((cur, i + 1))
-                cur.edit_call_ids.append(c["id"])
-                cur.last_edit_call_id = c["id"]
-                for p in _v_paths(c, fe, t) or _edit_paths(c, fe):
-                    if p not in cur.paths:
-                        cur.paths.append(p)
-                batches[-1] = (cur, i + 1)
-            elif _is_check(c):
-                cur = None
-                # `cat > f <<EOF … && pytest`: one call edits, then checks -> its own batch, verified by itself
-                own = [r["path"] for r in fe.get(c["id"], []) if r["path"]
-                       and classify.v_edit_path(r["path"], _roots(t))]
-                if own and classify.edit_precedes_check(c["args_summary"] or ""):
-                    b = Batch(t["session_id"], t["id"], t["day"], [c["id"]], list(dict.fromkeys(own)), c["id"],
-                              order=(ti, i))
-                    batches.append((b, i))
-        for bi, (b, scan_from) in enumerate(batches):
-            b.followed_by_edit = bi + 1 < len(batches)
-            inspected = None
-            for c in lst[scan_from:]:
-                if _is_check(c):
-                    if not c["has_result"]:
-                        continue
-                    rel = classify.is_relevant(c["args_summary"] or "", cwd, b.paths)
-                    if rel:
-                        b.tier = "verified_fail" if c["is_error"] else "verified_pass"
-                        b.verifier_call_id, b.verifier_initiator, b.relevance = c["id"], c["initiator"], rel
-                        break
-                elif inspected is None and not _is_v_edit(c, fe, t):
-                    if c["kind"] == "read" and _mentions(c["args_summary"], b.paths):
-                        inspected = c
-                    elif c["kind"] == "bash" and c["bash_intent"] == "git" and \
-                            classify.bash_git_subkind(c["args_summary"] or "") == "read" and \
-                            "diff" in (c["args_summary"] or ""):
-                        inspected = c
-            if b.tier == "none" and inspected is not None:
-                b.tier, b.verifier_call_id = "inspected", inspected["id"]
+        for i, c in enumerate(calls.get(t["id"], [])):
+            if c.get("sidechain_id"):
+                sides.setdefault((t["session_id"], c["sidechain_id"]), []).append((ti, t, i, c))
+            else:
+                mains.setdefault(t["id"], []).append((ti, t, i, c))
+    main_batches: dict[int, list[list]] = {}
+    for tid, lane in mains.items():
+        bl = main_batches[tid] = _lane_batches(lane, fe)
+        for bi, (b, _start, scan_from) in enumerate(bl):
+            nxt = bl[bi + 1][1] if bi + 1 < len(bl) else len(lane)
+            b.followed_by_edit = bi + 1 < len(bl)
+            _judge_window(b, lane[scan_from:nxt], fe, lane[0][1])
             out.append(b)
+        _tdd_red(bl)
+    inf = float("inf")
+    tkey = lambda x: (x[3]["ts"].timestamp() if x[3]["ts"] else inf, x[0], x[2])
+    for lane in sides.values():
+        lane.sort(key=tkey)
+        bl = _lane_batches(lane, fe)
+        end_ts = max((x[3]["ts"] for x in lane if x[3]["ts"]), default=None)
+        for bi, (b, start, scan_from) in enumerate(bl):
+            nxt = bl[bi + 1][1] if bi + 1 < len(bl) else len(lane)
+            b.followed_by_edit = bi + 1 < len(bl)
+            t = lane[start][1]
+            _judge_window(b, lane[scan_from:nxt], fe, t)
+            if b.tier in ("none", "inspected") and not b.followed_by_edit and end_ts is not None:
+                # parent checks after the subagent finished: in the parent's lane of the turn holding the
+                # subagent's last call, up to the parent's next edit batch
+                last_t = max((x for x in lane if x[3]["ts"]), key=tkey)[1]
+                pl = mains.get(last_t["id"], [])
+                k0 = next((k for k, x in enumerate(pl) if x[3]["ts"] and x[3]["ts"] > end_ts), len(pl))
+                k1 = next((p[1] for p in main_batches.get(last_t["id"], []) if p[1] >= k0), len(pl))
+                if any(_is_check(x[3]) for x in pl[k0:k1]):
+                    keep = (b.tier, b.verifier_call_id)
+                    b.tier = "none"
+                    _judge_window(b, pl[k0:k1], fe, t)
+                    if b.tier not in ("verified_pass", "verified_fail"):
+                        b.tier, b.verifier_call_id = keep
+            out.append(b)
+        _tdd_red(bl)
     # final: last batch per session (within scope) verified with no later edit
     last: dict[str, Batch] = {}
     for b in out:
@@ -559,7 +627,10 @@ def hand_edits(conn, day: str | None = None) -> dict:
     """H: file_edit.user_modified rows + git-snapshot deltas. Snapshots (kind=git_snapshot, data.git.changed_paths
     = everything differing from HEAD at that Stop) are diffed per session against the previous snapshot: a path
     counts in the snapshot where it first appears (or its per-file state changes, if provided), unless an agent
-    edit touched it in that session since the previous snapshot. Repair = path agent-edited earlier in the session."""
+    edit touched it since the previous snapshot (by tool started_at, not by turn): any tool call of the session,
+    main thread or subagent (background subagents keep editing after their turn ended), or of another session
+    in the same repo (parallel sessions share the worktree; window starts at the previous snapshot, else at
+    this session's first prompt). Repair = path agent-edited earlier in the session."""
     tmap = {t["id"]: t for t in _turns(conn)}
     um = _rows(conn, "SELECT fe.path, fe.tool_call_id, tc.turn_id FROM file_edit fe"
                      " JOIN tool_call tc ON tc.id = fe.tool_call_id WHERE fe.user_modified = 1")
@@ -575,13 +646,28 @@ def hand_edits(conn, day: str | None = None) -> dict:
         fe = _file_edits(conn)
         # per session: [(ts, paths)] of agent edits (tool ts, else turn start)
         agent: dict[str, list] = {}
+        by_repo: dict[str, list] = {}     # repo -> [(ts, paths, session_id)]
+        s_start: dict[str, datetime] = {}
+        s_repo: dict[str, str] = {}
+        for t in tmap.values():
+            s_repo.setdefault(t["session_id"], t["s_repo"] or t["s_cwd"])
+            if t["start"] and (t["session_id"] not in s_start or t["start"] < s_start[t["session_id"]]):
+                s_start[t["session_id"]] = t["start"]
         for c in _tool_calls(conn):
             t = tmap.get(c["turn_id"])
-            if not t or not _is_edit(c):
+            # any call that wrote files: also `python - <<EOF … open(p, "w")` (intent run) and
+            # `cat > f <<EOF && pytest` (intent test), whose FileEdits the parsers record
+            if not t or not (_is_edit(c) or fe.get(c["id"])):
                 continue
             at = c["ts"] or t["start"]
             if at:
-                agent.setdefault(t["session_id"], []).append((at, set(_edit_paths(c, fe))))
+                ps = set(_edit_paths(c, fe))
+                agent.setdefault(t["session_id"], []).append((at, ps))
+                repo = t["s_repo"] or t["s_cwd"]
+                if repo:
+                    by_repo.setdefault(repo, []).append((at, ps, t["session_id"]))
+        for rl in by_repo.values():
+            rl.sort(key=lambda x: x[0])
         by_sess: dict[str, list] = {}
         for sn in snaps:
             at = parse_ts(sn["at"])
@@ -610,6 +696,11 @@ def hand_edits(conn, day: str | None = None) -> dict:
                 d = (t["day"] if t else None) or local_day(at)
                 window = set().union(*[pp for ts_, pp in agent.get(sid, [])
                                        if (prev_at is None or ts_ > prev_at) and ts_ <= at])
+                rl = by_repo.get(s_repo.get(sid), [])
+                lo = prev_at or s_start.get(sid)
+                i0 = bisect_right(rl, lo, key=lambda x: x[0]) if lo else 0
+                window |= set().union(*[pp for ts_, pp, osid in rl[i0:bisect_right(rl, at, key=lambda x: x[0])]
+                                        if osid != sid])
                 before = set().union(*[pp for ts_, pp in agent.get(sid, [])
                                        if prev_at is not None and ts_ <= prev_at])
                 if not day or d == day:
@@ -845,6 +936,7 @@ def _emit_scope(w: _W, conn, day: str | None) -> None:
             w.put("V_fail_share", st, sid, _share(len(fails), len(ver)), "share", len(ver))
             w.put("V_human", st, sid, _share(sum(b.verifier_initiator == "human" for b in ver), len(ver)),
                   "share", len(ver))
+            w.put("V_recovered", st, sid, sum(b.recovered for b in ver), "batches", len(ver))
         lasts: dict[str, Batch] = {}
         for b in bs:
             if b.session_id not in lasts or b.order > lasts[b.session_id].order:

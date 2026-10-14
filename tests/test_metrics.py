@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from scorer import classify, config, db, ingest, metrics
+from scorer import classify, config, db, ingest, metrics, model
 from scorer.model import (ApiCall, Bundle, Event, FileEdit, Session, ToolCall, Turn, local_day)
 
 T0 = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)   # noon UTC: same local day almost everywhere
@@ -272,7 +272,7 @@ def test_compute_all_idempotent(conn, tmp_path):
     first = counts()
     metrics.compute_all(conn, rid)
     assert counts() == first
-    assert conn.execute("SELECT DISTINCT definition_version FROM metric_value").fetchall()[0][0] == "v1"
+    assert conn.execute("SELECT DISTINCT definition_version FROM metric_value").fetchall()[0][0] == model.DEFINITION_VERSION == "v2"
 
 
 # --- tooling use -----------------------------------------------------------------------------------
@@ -477,3 +477,191 @@ def test_queued_prompts_metric(conn):
     rid = run(conn)
     assert val(conn, rid, "queued_prompts") == 2
     assert val(conn, rid, "queued_prompts", scope_type="all", scope_id="all") == 2
+
+
+# --- hand edits vs background subagents / parallel sessions --------------------------------------
+# Real case (redacted): a session's first Stop snapshot listed ~13 files written by *another* session's
+# background subagents in the same repo (and by subagents still running after their parent turn ended);
+# all were counted as the human's own hand edits.
+
+def _hsnap(sec, idx, paths):
+    return Event("git_snapshot", ts(sec), idx, {"git": {"head": "h", "changed_paths": paths}})
+
+
+def test_background_subagent_edit_after_turn_end_is_not_a_hand_edit(conn):
+    # parent turn 0 ends at 50 s; its background subagent writes b.py at 70 s; the next Stop at 150 s
+    calls = [ToolCall(0, "e1", "Edit", kind="edit", args_summary="/r/a.py", started_at=ts(10), has_result=True),
+             ToolCall(0, "s1", "Write", kind="edit", args_summary="/r/b.py", started_at=ts(70), has_result=True,
+                      sidechain_id="bg1")]
+    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=[turn(0, 0, 50), turn(1, 100, 150)],
+                       tool_calls=calls, file_edits=[FileEdit("e1", "/r/a.py"), FileEdit("s1", "/r/b.py")],
+                       events=[_hsnap(50, 0, ["a.py"]), _hsnap(150, 1, ["a.py", "b.py"])]))
+    h = metrics.hand_edits(conn, DAY)
+    assert h["count"] == 0 and not h["partial"], h["evidence"]
+
+
+def test_parallel_session_edit_in_same_repo_is_not_a_hand_edit(conn):
+    # session A only reads; session B (same repo) edits x.py and y.py; A's snapshots see them dirty
+    a = Bundle(Session("sA", "claude", cwd="/r", repo="/r"), turns=[turn(0, 0, 50), turn(1, 100, 150)],
+               events=[_hsnap(50, 0, []), _hsnap(150, 1, ["x.py", "y.py", "z.py"])])
+    b = Bundle(Session("sB", "claude", cwd="/r/sub", repo="/r"), turns=[turn(0, 60, 140)],
+               tool_calls=[ToolCall(0, "bx", "Edit", kind="edit", args_summary="/r/x.py", started_at=ts(70),
+                                    has_result=True),
+                           ToolCall(0, "by", "Bash", kind="bash", bash_intent="edit", args_summary="cp t y.py",
+                                    started_at=ts(80), has_result=True, sidechain_id="sub1")],
+               file_edits=[FileEdit("bx", "/r/x.py"), FileEdit("by", "/r/y.py")])
+    # another repo editing z.py does not excuse it
+    c = Bundle(Session("sC", "claude", cwd="/other", repo="/other"), turns=[turn(0, 60, 140)],
+               tool_calls=[ToolCall(0, "cz", "Edit", kind="edit", args_summary="/other/z.py", started_at=ts(70),
+                                    has_result=True)],
+               file_edits=[FileEdit("cz", "/other/z.py")])
+    write(conn, a, b, c)
+    h = metrics.hand_edits(conn, DAY)
+    assert [e["note"] for e in h["evidence"]] == ["own: z.py"]
+
+
+def test_parallel_session_edit_before_window_still_counts(conn):
+    # B edited x.py before A's previous snapshot: x.py first appears later -> not excused by B
+    a = Bundle(Session("sA", "claude", cwd="/r", repo="/r"), turns=[turn(0, 0, 50), turn(1, 100, 150)],
+               events=[_hsnap(50, 0, []), _hsnap(150, 1, ["x.py"])])
+    b = Bundle(Session("sB", "claude", cwd="/r", repo="/r"), turns=[turn(0, 10, 40)],
+               tool_calls=[ToolCall(0, "bx", "Edit", kind="edit", args_summary="/r/x.py", started_at=ts(20),
+                                    has_result=True)],
+               file_edits=[FileEdit("bx", "/r/x.py")])
+    write(conn, a, b)
+    assert metrics.hand_edits(conn, DAY)["own"] == 1
+
+
+def test_inline_python_edit_is_not_a_hand_edit(conn):
+    # the call's intent is "run", but the parser recorded the file it wrote: not the human's edit
+    calls = [ToolCall(0, "p1", "Bash", kind="bash", bash_intent="run", args_summary="python3 - <<'EOF' …",
+                      started_at=ts(20), has_result=True)]
+    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=[turn(0, 0, 50)], tool_calls=calls,
+                       file_edits=[FileEdit("p1", "/r/m.py")],
+                       events=[_hsnap(1, 0, []), _hsnap(50, 0, ["m.py"])]))
+    assert metrics.hand_edits(conn, DAY)["count"] == 0
+    assert [b.tier for b in metrics.verification_batches(conn, DAY)] == []   # V unchanged: not an edit batch
+
+
+# --- V tier v2: last relevant check per window, lanes per sidechain -----------------------------
+# Real case (redacted): one turn, 9 test runs (5 in subagents); a TDD red run (`cat > test ; pytest`) and
+# one other non-zero exit, then green -> the dashboard showed "Check failed".
+
+def _tier_bundle(tmp_path, calls, edits):
+    (tmp_path / "pyproject.toml").write_text("")
+    for f in (classify.manifest_dir, classify._walk, classify._has_manifest, classify._is_relevant):
+        f.cache_clear()
+    return Bundle(Session("s1", "claude", cwd=str(tmp_path)), turns=[turn(0, 0, 500)], tool_calls=calls,
+                  file_edits=edits)
+
+
+def test_red_then_green_is_pass_and_recovered(conn, tmp_path):
+    f = str(tmp_path / "a.py")
+    calls = [ToolCall(0, "e1", "Edit", kind="edit", args_summary=f, started_at=ts(1), has_result=True),
+             ToolCall(0, "t1", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(2),
+                      has_result=True, is_error=True),
+             ToolCall(0, "t2", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(3),
+                      has_result=True)]
+    write(conn, _tier_bundle(tmp_path, calls, [FileEdit("e1", f)]))
+    [b] = metrics.verification_batches(conn, DAY)
+    assert (b.tier, b.recovered) == ("verified_pass", True)
+    rid = run(conn)
+    assert val(conn, rid, "V_recovered") == 1 and val(conn, rid, "V_tier:verified_fail") == 0
+
+
+def test_last_check_failing_is_fail(conn, tmp_path):
+    f = str(tmp_path / "a.py")
+    calls = [ToolCall(0, "e1", "Edit", kind="edit", args_summary=f, started_at=ts(1), has_result=True),
+             ToolCall(0, "t1", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(2),
+                      has_result=True),
+             ToolCall(0, "t2", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(3),
+                      has_result=True, is_error=True)]
+    write(conn, _tier_bundle(tmp_path, calls, [FileEdit("e1", f)]))
+    [b] = metrics.verification_batches(conn, DAY)
+    assert (b.tier, b.recovered) == ("verified_fail", False)
+
+
+def test_check_after_next_edit_does_not_decide_earlier_batch(conn, tmp_path):
+    f = str(tmp_path / "a.py")
+    calls = [ToolCall(0, "e1", "Edit", kind="edit", args_summary=f, started_at=ts(1), has_result=True),
+             ToolCall(0, "t1", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(2),
+                      has_result=True, is_error=True),
+             ToolCall(0, "e2", "Edit", kind="edit", args_summary=f, started_at=ts(3), has_result=True),
+             ToolCall(0, "t2", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(4),
+                      has_result=True)]
+    write(conn, _tier_bundle(tmp_path, calls, [FileEdit("e1", f), FileEdit("e2", f)]))
+    b1, b2 = metrics.verification_batches(conn, DAY)
+    assert (b1.tier, b1.followed_by_edit, b2.tier, b2.recovered) == ("verified_fail", True, "verified_pass", False)
+
+
+def test_tdd_red_edit_check_call_then_green(conn, tmp_path):
+    t_ = str(tmp_path / "tests" / "test_a.py")
+    calls = [ToolCall(0, "r1", "Bash", kind="bash", bash_intent="test", started_at=ts(1), has_result=True,
+                      is_error=True, args_summary="cat > tests/test_a.py ; pytest -q"),
+             ToolCall(0, "t2", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(2),
+                      has_result=True)]
+    write(conn, _tier_bundle(tmp_path, calls, [FileEdit("r1", t_)]))
+    [b] = metrics.verification_batches(conn, DAY)
+    assert (b.tier, b.recovered) == ("verified_pass", True)
+
+
+def test_subagent_lane_not_interleaved_with_parent(conn, tmp_path):
+    f, g = str(tmp_path / "a.py"), str(tmp_path / "b.py")
+    calls = [ToolCall(0, "e1", "Edit", kind="edit", args_summary=f, started_at=ts(1), has_result=True),
+             ToolCall(0, "se", "Edit", kind="edit", args_summary=g, started_at=ts(2), has_result=True,
+                      sidechain_id="sub1"),
+             ToolCall(0, "t1", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(3),
+                      has_result=True),
+             # the subagent's own run fails after the parent's passed: it must not flip the parent's batch,
+             # and the parent's pass must not count for the subagent's batch
+             ToolCall(0, "st", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(4),
+                      has_result=True, is_error=True, sidechain_id="sub1")]
+    write(conn, _tier_bundle(tmp_path, calls, [FileEdit("e1", f), FileEdit("se", g)]))
+    bs = {b.edit_call_ids[0]: b for b in metrics.verification_batches(conn, DAY)}
+    ids = {r["tool_use_id"]: r["id"] for r in conn.execute("SELECT id, tool_use_id FROM tool_call")}
+    assert bs[ids["e1"]].tier == "verified_pass" and bs[ids["e1"]].verifier_call_id == ids["t1"]
+    assert bs[ids["se"]].tier == "verified_fail" and bs[ids["se"]].verifier_call_id == ids["st"]
+
+
+def test_parent_check_after_subagent_finished_verifies_its_batch(conn, tmp_path):
+    g = str(tmp_path / "b.py")
+    calls = [ToolCall(0, "se", "Edit", kind="edit", args_summary=g, started_at=ts(2), has_result=True,
+                      sidechain_id="sub1"),
+             ToolCall(0, "sr", "Read", kind="read", args_summary=g, started_at=ts(3), has_result=True,
+                      sidechain_id="sub1"),
+             ToolCall(0, "t1", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(10),
+                      has_result=True, initiator="human")]
+    write(conn, _tier_bundle(tmp_path, calls, [FileEdit("se", g)]))
+    [b] = metrics.verification_batches(conn, DAY)
+    assert (b.tier, b.verifier_initiator) == ("verified_pass", "human")
+
+
+def test_subagent_lane_spans_turns(conn, tmp_path):
+    # background subagent edits in turn 0's window and runs its tests during turn 1's window
+    (tmp_path / "pyproject.toml").write_text("")
+    for f in (classify.manifest_dir, classify._walk, classify._has_manifest, classify._is_relevant):
+        f.cache_clear()
+    g = str(tmp_path / "b.py")
+    calls = [ToolCall(0, "se", "Edit", kind="edit", args_summary=g, started_at=ts(20), has_result=True,
+                      sidechain_id="sub1"),
+             ToolCall(1, "st", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(110),
+                      has_result=True, sidechain_id="sub1")]
+    write(conn, Bundle(Session("s1", "claude", cwd=str(tmp_path)), turns=[turn(0, 0, 50), turn(1, 100, 150)],
+                       tool_calls=calls, file_edits=[FileEdit("se", g)]))
+    [b] = metrics.verification_batches(conn, DAY)
+    tid0 = conn.execute("SELECT id FROM turn WHERE idx=0").fetchone()[0]
+    assert b.tier == "verified_pass" and b.turn_id == tid0
+
+
+def test_tdd_red_step_then_green_fix_is_recovered(conn, tmp_path):
+    # `cat > test ; pytest` red (own batch), then the fix edit and a green run: no "Check failed"
+    t_, f = str(tmp_path / "tests" / "test_a.py"), str(tmp_path / "a.py")
+    calls = [ToolCall(0, "r1", "Bash", kind="bash", bash_intent="test", started_at=ts(1), has_result=True,
+                      is_error=True, args_summary="cat > tests/test_a.py ; pytest -q", sidechain_id="sub1"),
+             ToolCall(0, "e1", "Edit", kind="edit", args_summary=f, started_at=ts(2), has_result=True,
+                      sidechain_id="sub1"),
+             ToolCall(0, "t2", "Bash", kind="bash", bash_intent="test", args_summary="pytest -q", started_at=ts(3),
+                      has_result=True, sidechain_id="sub1")]
+    write(conn, _tier_bundle(tmp_path, calls, [FileEdit("r1", t_), FileEdit("e1", f)]))
+    assert [(b.tier, b.recovered) for b in metrics.verification_batches(conn, DAY)] == \
+        [("verified_pass", True), ("verified_pass", False)]

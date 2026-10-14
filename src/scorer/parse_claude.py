@@ -40,6 +40,9 @@ BUILTIN_COMMANDS = frozenset({
     "install-github-app", "install-slack-app", "remote-env", "output-style:new",
 })
 
+# Session-ending builtins: teardown, not a human turn (no Turn row; only the command_builtin event).
+SESSION_END_COMMANDS = frozenset({"exit", "quit"})
+
 
 # Failure markers in test/build output. Claude Code only sets tool_result.is_error when the shell exits
 # non-zero; `pytest ... | tail`, `...; echo "exit: $?"` etc. mask the exit status, so the runner's own
@@ -109,6 +112,10 @@ def _text(e: dict) -> str | None:
         ts = [b.get("text") or "" for b in c if isinstance(b, dict) and b.get("type") == "text"]
         return "\n".join(ts) if ts else None
     return None
+
+
+def _tool_ids(ents: list[dict]) -> set:
+    return {b.get("id") for e in ents if e.get("type") == "assistant" for b in _blocks(e, "tool_use")}
 
 
 def _blocks(e: dict, kind: str) -> list[dict]:
@@ -270,6 +277,7 @@ class _Parser:
         self.reqs: dict[str, dict] = {}
         self.tooling_seen: set[tuple] = set()   # (turn_idx, category, name)
         self.cmd_event: dict[int, Event] = {}   # turn_idx -> its command event
+        self.spawn_turn: dict[str, int | None] = {}   # subagent id -> turn idx of the spawning Agent call
         self.sess_cwd: str | None = None
 
     # ---- tooling events (skills / commands / mcp / plugins) ----
@@ -321,7 +329,10 @@ class _Parser:
         return k
 
     # ---- shared assistant / tool handling (main + sidechain) ----
-    def _assistant(self, e: dict, t: datetime | None, tidx: int | None, side: str | None) -> None:
+    def _assistant(self, e: dict, t: datetime | None, tidx: int | None, side: str | None,
+                   rule_tidx: int | None = None) -> None:
+        """rule_tidx: the turn whose prompt decides initiator rules 2/3 (a subagent's spawning turn);
+        defaults to tidx, the turn active at t."""
         m = e.get("message") if isinstance(e.get("message"), dict) else {}
         rid = e.get("requestId")
         if rid and m.get("model") != "<synthetic>":
@@ -351,7 +362,8 @@ class _Parser:
                 args = str(inp.get("file_path") or inp.get("notebook_path"))[:MAX_ARGS]
             elif inp.get("pattern") or inp.get("path"):
                 args = str(inp.get("pattern") or inp.get("path"))[:MAX_ARGS]
-            turn = self.ts_list[tidx].turn if tidx is not None else None
+            ridx = rule_tidx if rule_tidx is not None else tidx
+            turn = self.ts_list[ridx].turn if ridx is not None else None
             ini, rule = _initiator(turn, kind, intent)
             tc = ToolCall(turn_idx=tidx, tool_use_id=tid, name=name, kind=kind, bash_intent=intent,
                           initiator=ini, initiator_rule=rule, args_summary=args, started_at=iso(t),
@@ -491,6 +503,12 @@ class _Parser:
                         cur.turn.interrupted = True
                         cur.last_uuid = u or cur.last_uuid
                     continue
+                if pk == "command" and t:
+                    m = CMD_NAME.search(_text(e) or "")
+                    if m and m.group(1).lower() in SESSION_END_COMMANDS:
+                        b.events.append(Event("command_builtin", iso(t), self._turn_idx(cur), {"name": m.group(1)}))
+                        pending = None
+                        continue
                 if pk in ("prompt", "command") and t:
                     kind = pk
                     prompt_at = t
@@ -591,7 +609,13 @@ class _Parser:
 
     # ---- subagents ----
     def _subagents(self, path: str) -> None:
+        """Every subagent transcript under <session>/subagents/ (also ones still being written). Tool calls
+        stay in the turn active at their timestamp (turn timing rules unchanged), but initiator rules 2/3
+        come from the turn that spawned the subagent (meta.toolUseId -> Agent call), so "spawn agents to
+        test it" credits their test runs to the human even when they land in a later turn's window.
+        Nested subagents inherit their parent subagent's spawning turn; parents are parsed first."""
         sdir = os.path.join(os.path.splitext(path)[0], "subagents")
+        todo = []
         for sp in sorted(glob.glob(os.path.join(sdir, "*.jsonl"))):
             ents = _load(sp)
             if not ents:
@@ -603,44 +627,62 @@ class _Parser:
                     meta = json.load(f) or {}
             except (OSError, ValueError):
                 pass
+            if not isinstance(meta, dict):
+                meta = {}
             aid = next((e["agentId"] for e in ents if e.get("agentId")), None) \
                 or os.path.basename(sp)[:-6].removeprefix("agent-")
-            n_before = len(self.tools)
-            first = last = None
-            model = meta.get("model")
-            seen: set[str] = set()
-            for e in ents:
-                u = e.get("uuid")
-                if u:
-                    if u in seen:
-                        continue
-                    seen.add(u)
-                t = parse_ts(e.get("timestamp"))
-                if t is None or e.get("type") not in ("user", "assistant"):
+            todo.append((sp, ents, meta, aid, _tool_ids(ents)))
+        while todo:   # parents before children: a child's link is a tool call of its parent's transcript
+            pending = set().union(*(x[4] for x in todo))
+            ready = [x for x in todo if (x[2].get("toolUseId") or "") not in pending - x[4]] or todo[:1]
+            for x in ready:
+                todo.remove(x)
+                self._subagent(*x[:4])
+
+    def _subagent(self, sp: str, ents: list[dict], meta: dict, aid: str) -> None:
+        link = self.tools.get(meta.get("toolUseId") or "")
+        if link is None:
+            spawn = None
+        elif link.sidechain_id is None:
+            spawn = link.turn_idx
+        else:
+            spawn = self.spawn_turn.get(link.sidechain_id, link.turn_idx)
+        self.spawn_turn[aid] = spawn
+        n_before = len(self.tools)
+        first = last = None
+        model = meta.get("model")
+        seen: set[str] = set()
+        for e in ents:
+            u = e.get("uuid")
+            if u:
+                if u in seen:
                     continue
-                first = first or t
-                last = max(last or t, t)
-                tidx = self._turn_at(t)
-                if e.get("type") == "assistant":
-                    if not model:
-                        mm = (e.get("message") or {}).get("model")
-                        model = mm if mm != "<synthetic>" else None
-                    self._assistant(e, t, tidx, aid)
-                else:
-                    self._tool_results(e, t)
-                if tidx is not None:
-                    tt = self.ts_list[tidx]
-                    tt.side_ts.append(t)
-            if first is None:
+                seen.add(u)
+            t = parse_ts(e.get("timestamp"))
+            if t is None or e.get("type") not in ("user", "assistant"):
                 continue
-            link = self.tools.get(meta.get("toolUseId") or "")
-            tidx = link.turn_idx if link is not None and link.sidechain_id is None else self._turn_at(first)
-            data = {"agent_id": aid, "model": model, "n_tools": len(self.tools) - n_before}
-            if meta.get("spawnDepth") is not None:
-                data["depth"] = meta.get("spawnDepth")
-            if meta.get("agentType"):
-                data["agent_type"] = meta.get("agentType")
-            self.b.events.append(Event("subagent", iso(first), tidx, data))
+            first = first or t
+            last = max(last or t, t)
+            tidx = self._turn_at(t)
+            if e.get("type") == "assistant":
+                if not model:
+                    mm = (e.get("message") or {}).get("model")
+                    model = mm if mm != "<synthetic>" else None
+                self._assistant(e, t, tidx, aid, spawn)
+            else:
+                self._tool_results(e, t)
+            if tidx is not None:
+                tt = self.ts_list[tidx]
+                tt.side_ts.append(t)
+        if first is None:
+            return
+        tidx = link.turn_idx if link is not None and link.sidechain_id is None else self._turn_at(first)
+        data = {"agent_id": aid, "model": model, "n_tools": len(self.tools) - n_before}
+        if meta.get("spawnDepth") is not None:
+            data["depth"] = meta.get("spawnDepth")
+        if meta.get("agentType"):
+            data["agent_type"] = meta.get("agentType")
+        self.b.events.append(Event("subagent", iso(first), tidx, data))
 
     # ---- turn ends ----
     def _finish_turns(self) -> None:
