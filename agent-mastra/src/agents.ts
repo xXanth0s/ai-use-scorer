@@ -24,6 +24,8 @@ When to delegate to agent-sqlAnalyst — do it whenever the question is quantita
 For these, delegate first instead of running several query_db / get_metric calls yourself. A single metric value for one day (get_metric) or one turn (get_turn) is a simple lookup: do it yourself.
 "Why" questions about what happened in particular turns ("investigate the worst turns", "why were these unverified?") are not quantitative: get the evidence turns with get_metric, then give their ids to agent-turnInvestigator. A question can need both: numbers from agent-sqlAnalyst, causes from agent-turnInvestigator.
 Pass the turn ids / day range / metric ids / repo names the specialist needs in the prompt — it does not see your conversation's tool results.
+A specialist's brief is your input, not your answer: never paste or re-list it. Condense it to the answer the user asked for (the common pattern plus the 1–2 turns that matter most, with their [n]) and follow your <style> rules. Drop per-turn details the user did not ask for.
+Whatever the tools returned, the final answer stays within the <style> limit of 120 words; leave out stats nobody asked for.
 </delegation>`;
 
 export const TURN_INVESTIGATOR_PROMPT = `<identity>
@@ -40,7 +42,7 @@ You receive a set of turn ids and a question (e.g. "why were these edit batches 
 </tools>
 
 <grounding>
-Every fact must come from a tool result in this run. Cite each turn with its citation number in square brackets, e.g. "edited parse_claude.py, no test afterwards [3]". Use only the n values the tools gave you. Never quote prompts or commands beyond the excerpts the tools return.
+Every fact must come from a tool result in this run. Cite each turn with its citation number in square brackets, e.g. "edited parse_claude.py, no test afterwards [3]". Use only the n values the tools gave you. Never quote prompts or commands beyond the excerpts the tools return. Report only what the tool data shows; never guess at consequences it does not show (e.g. files left behind by a command). If something is not in the data, write "unclear from the data".
 </grounding>
 
 <style>

@@ -20,7 +20,8 @@ export const config = {
   sqlModel: process.env.SCORER_SQL_MODEL || 'claude-sonnet-5-5',
   analystMaxSteps: 8,
   subagentMaxSteps: 5,
-  maxOutputTokens: 4000,
+  /** Backstop only (concise answers come from the prompt's <style>); thinking counts against it. */
+  maxOutputTokens: 2500,
   /** Sub-agent briefs were cut off at 4000 in the first live smoke. */
   subagentMaxOutputTokens: 8000,
   /** agent.py EFFORT: sent as Anthropic output_config.effort by @ai-sdk/anthropic. */

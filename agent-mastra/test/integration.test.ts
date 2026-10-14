@@ -222,11 +222,11 @@ describe('sub-agent harness limits', () => {
     expect(evs.map((e) => e.type)).toContain('subagent-result');
   });
 
-  it('effort low on analyst + subagents; subagent output cap 8000', () => {
+  it('effort low on analyst + subagents; subagent output cap 8000; analyst cap 2500', () => {
     expect(analystModel.seen.at(-1)!.providerOptions?.anthropic?.effort).toBe('low');
     expect(investigatorModel.seen.at(-1)!.providerOptions?.anthropic?.effort).toBe('low');
     expect(investigatorModel.seen.at(-1)!.maxOutputTokens).toBe(8000);
-    expect(analystModel.seen.at(-1)!.maxOutputTokens).toBe(4000);
+    expect(analystModel.seen.at(-1)!.maxOutputTokens).toBe(2500);
   });
 });
 
