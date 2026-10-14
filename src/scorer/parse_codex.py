@@ -34,6 +34,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from . import classify, prices
+from .parse_claude import output_failed
 from .model import ApiCall, Bundle, Event, FileEdit, Session, ToolCall, Turn, clip, iso, parse_ts
 
 ARGS_MAX = 500
@@ -431,6 +432,7 @@ class _Parser:
                         info["duration"] = int(dur * 1000)
             except ValueError:
                 pass
+        info["out"] = text
         head = text[:200]
         if re.match(r"\s*(Script failed|Script error|Error:|error:)", head):
             info["is_error"] = True
@@ -465,6 +467,7 @@ class _Parser:
             cmd = _shell_cmd(item.get("command"))
             ec = item.get("exit_code")
             err = (isinstance(ec, int) and ec != 0) or item.get("status") == "failed"
+            out = item.get("aggregated_output") or item.get("formatted_output") or ""
             dur = _duration_ms(item.get("duration"))
             if dur is None and p.get("completed_at_ms") and p.get("started_at_ms"):
                 dur = int(p["completed_at_ms"] - p["started_at_ms"])
@@ -472,12 +475,15 @@ class _Parser:
             if parent["direct_shell"] and parent["kids"] == 1:
                 parent["cmd"] = cmd or parent["cmd"]
                 parent["is_error"] = parent["is_error"] or err
+                parent["out"] = parent.get("out") or (out if isinstance(out, str) else "")
                 parent["duration"] = dur
                 parent["has_result"] = True
                 parent["cwd"] = item.get("cwd")
                 return
             self._skill_reads(ts, parent["turn"], cmd, item.get("id"))
             intent = classify.bash_intent(cmd)
+            if not err and intent in ("test", "build") and isinstance(out, str) and output_failed(out):
+                err = True  # exit status masked by a pipe / `; echo`
             ini, rule = self._initiator(parent["turn"], intent)
             self._tool(ToolCall(turn_idx=parent["turn"], tool_use_id=item.get("id") or f"{parent['cid']}:{parent['kids']}",
                                 name="exec_command", kind=_kind("exec_command"), bash_intent=intent,
@@ -553,6 +559,8 @@ class _Parser:
                 for op, path, a, r in files:
                     self._edit(cid, path, a, r)
             dur = info["duration"] if info["duration"] is not None else _ms_between(info["ts"], info["end"])
+            if not info["is_error"] and intent in ("test", "build") and output_failed(info.get("out")):
+                info["is_error"] = True  # exit status masked by a pipe / `; echo`
             ini, rule = self._initiator(info["turn"], intent)
             self._tool(ToolCall(turn_idx=info["turn"], tool_use_id=cid, name=name, kind=_kind(name),
                                 bash_intent=intent, initiator=ini, initiator_rule=rule,

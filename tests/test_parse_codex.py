@@ -204,3 +204,42 @@ def test_fixtures_have_no_long_free_text(name):
                 elif isinstance(v, str):
                     assert len(v.split()) <= 4 or set(v) <= set("0123456789abcdef\n+-@ "), v[:40]
             walk(json.loads(line))
+
+
+def _exec_item(o, ts, cmd, out, ec=0):
+    return {"timestamp": ts, "type": "event_msg", "ordinal": o,
+            "payload": {"type": "item_completed", "item": {
+                "type": "CommandExecution", "id": f"exec-{o}", "command": ["/bin/zsh", "-lc", cmd], "cwd": "/tmp/x",
+                "status": "completed" if ec == 0 else "failed", "aggregated_output": out, "exit_code": ec,
+                "duration": {"secs": 1, "nanos": 0}}}}
+
+
+def test_masked_test_failure_flags_exec(tmp_path):
+    """`pytest | tail` exits 0 (exit_code 0) but the output shows failures -> is_error."""
+    def call(o, ts, cid, cmd):
+        return {"timestamp": ts, "type": "response_item", "ordinal": o,
+                "payload": {"type": "function_call", "name": "exec_command", "call_id": cid,
+                            "arguments": json.dumps({"cmd": cmd})}}
+
+    def output(o, ts, cid, text):
+        return {"timestamp": ts, "type": "response_item", "ordinal": o,
+                "payload": {"type": "function_call_output", "call_id": cid, "output": text}}
+
+    recs = _base() + [
+        _task(1, "2026-10-10T10:00:01Z", "t1"), _user(2, "2026-10-10T10:00:01Z", "fix"),
+        call(3, "2026-10-10T10:00:02Z", "c1", "pytest -q | tail -3"),
+        output(4, "2026-10-10T10:00:03Z", "c1", "Exit code: 0\nOutput:\n1 failed, 2 passed in 0.1s"),
+        call(5, "2026-10-10T10:00:04Z", "c2", "pytest -q | tail -3"),
+        output(6, "2026-10-10T10:00:05Z", "c2", "Exit code: 0\nOutput:\ntest_error PASSED\n3 passed in 0.1s"),
+        call(7, "2026-10-10T10:00:06Z", "c3", "cat ci.log"),
+        output(8, "2026-10-10T10:00:07Z", "c3", "Exit code: 0\nOutput:\n1 failed in 0.1s"),
+        {"timestamp": "2026-10-10T10:00:08Z", "type": "response_item", "ordinal": 9,
+         "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c4", "input": "x"}},
+        _exec_item(10, "2026-10-10T10:00:09Z", "go test ./... | tee log", "--- FAIL: TestA\nFAIL\tpkg\t0.1s"),
+        _exec_item(11, "2026-10-10T10:00:10Z", "go test ./...", "ok  \tpkg\t0.1s"),
+        _end(12, "2026-10-10T10:00:11Z"),
+    ]
+    b = parse(_write(tmp_path, recs))
+    got = {(c.args_summary, c.is_error) for c in b.tool_calls}
+    assert got == {("pytest -q | tail -3", True), ("pytest -q | tail -3", False), ("cat ci.log", False),
+                   ("go test ./... | tee log", True), ("go test ./...", False)}

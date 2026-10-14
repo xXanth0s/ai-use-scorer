@@ -30,6 +30,44 @@ SKILL_BASE = "Base directory for this skill"
 PEER_PREFIX = "Another Claude session sent a message"  # peer relay, sometimes without isMeta
 
 
+# Failure markers in test/build output. Claude Code only sets tool_result.is_error when the shell exits
+# non-zero; `pytest ... | tail`, `...; echo "exit: $?"` etc. mask the exit status, so the runner's own
+# summary line is the only signal. Each pattern needs a non-zero count or a runner-specific verdict, so a
+# passing test that merely mentions "error"/"fail" (e.g. test_error PASSED) does not match.
+FAIL_MARKERS = re.compile("|".join([
+    r"^Exit code [1-9]\d*",                                         # Claude Code's own non-zero prefix
+    r"^\s*(?i:exit(?:[ _]?code|[ _]status)?|rc)\s*[:=]\s*[1-9]\d*\s*$",  # echo "exit code: $?"
+    r"\b[1-9]\d* (?:failed|errors?)\b[^\n]* in [\d.]+m?s\b",          # pytest: "1 failed, 2 passed in 0.1s"
+    r"\b(?:Test Files|Tests)\s+[1-9]\d* failed\b",                    # vitest
+    r"\b(?:Tests|Test Suites):\s+[1-9]\d* failed\b",                  # jest
+    r"^(?:\S+:\s+)?\s*[1-9]\d* (?:fail|failed|failing)\s*$",          # bun / playwright / mocha
+    r"^(?:\S+:\s+)?\s*(?:--- )?FAIL\b",                              # go test, jest, vitest file lines
+    r"\btest result: FAILED\b",                                       # cargo test
+    r"^error: could not compile\b",                                   # cargo build
+    r"\berror TS\d+:",                                                # tsc
+    r"\b[1-9]\d* problems? \([1-9]\d* errors?",                        # eslint
+    r"\bexited with code [1-9]\d*",                                    # bun/npm/yarn scripts
+    r"\bcommand\s+(?:\([^)\n]*\)\s+)?exited \([1-9]\d*\)",              # turbo
+    r"^Failed:\s+\S+#\S+",                                             # turbo task summary
+    r"^npm (?:ERR!|error) code\b",                                     # npm
+    r"^Found [1-9]\d* errors? in [1-9]\d* files?",                     # mypy
+]), re.M)
+
+
+def output_failed(text: str | None) -> bool:
+    """True when test/build output shows a failure that the exit status may have hidden."""
+    return bool(text) and FAIL_MARKERS.search(text) is not None
+
+
+def _result_text(blk: dict) -> str:
+    c = blk.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(b.get("text") or "" for b in c if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
 # --- small helpers ----------------------------------------------------------
 def _load(path: str) -> list[dict]:
     out = []
@@ -327,6 +365,11 @@ class _Parser:
             turns.add(tc.turn_idx)
             tc.has_result = True
             tc.is_error = bool(blk.get("is_error"))
+            if tc.name == "Bash" and not tc.is_error:
+                if isinstance(tur, dict) and len(res) == 1 and tur.get("interrupted") is True:
+                    tc.is_error = True
+                elif tc.bash_intent in ("test", "build") and output_failed(_result_text(blk)):
+                    tc.is_error = True
             st = self.tool_at.get(tc.tool_use_id)
             if st and t:
                 tc.duration_ms = max(0, int((t - st).total_seconds() * 1000))

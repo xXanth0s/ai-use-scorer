@@ -7,7 +7,9 @@ import subprocess
 import sys
 
 from scorer.model import parse_ts
-from scorer.parse_claude import parse, prompt_kind
+import pytest
+
+from scorer.parse_claude import output_failed, parse, prompt_kind
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 FIX = os.path.join(ROOT, "tests", "fixtures", "claude")
@@ -229,3 +231,85 @@ def test_hookio_stop_line_through_ingest(tmp_path, scorer_home):
     assert t["agent_finished_at"] == line["at"]
     snap = conn.execute("SELECT turn_id, data FROM event WHERE kind='git_snapshot' AND session_id=?", (sid,)).fetchone()
     assert snap["turn_id"] == t["id"] and "hello.py" in json.loads(snap["data"])["git"]["changed_paths"]
+
+
+def test_masked_exit_pytest_fixture():
+    """Real session (redacted): `pytest ...; echo "exit code: $?"` exits 0 and Claude sets is_error=false,
+    but the run failed. Install/--version calls in the same session stay non-errors."""
+    b = fx("masked_exit_pytest.jsonl")
+    got = [(c.bash_intent, c.is_error) for c in b.tool_calls]
+    assert got == [("test", False), ("test", False), ("edit", False), ("test", True)]
+
+
+@pytest.mark.parametrize("text", [
+    "FAILED hello.py::test_x - AssertionError\n===== 1 failed in 0.02s =====",
+    "1 failed, 3 passed in 1.20s",
+    "==== 2 passed, 1 error in 0.30s ====",
+    "web:test:unit:       Tests  9 failed | 300 passed (309)",
+    " Test Files  1 failed (1)",
+    "Test Suites: 4 failed, 3 passed, 7 total\nTests:       6 failed, 80 passed, 86 total",
+    "(fail) suite > case\n\n 12 pass\n 2 fail\n Ran 14 tests",
+    "--- FAIL: TestFoo (0.00s)\nFAIL\nFAIL\texample.com/pkg\t0.01s",
+    "test result: FAILED. 3 passed; 1 failed; 0 ignored",
+    "src/a.ts(3,5): error TS2304: Cannot find name 'x'.",
+    "✖ 7 problems (1 error, 6 warnings)",
+    'error: script "lint:ci" exited with code 1',
+    " ERROR  run failed: command  exited (1)",
+    "Failed:    web#typecheck",
+    "ok\nexit code: 2",
+    "EXIT=1",
+    "Found 3 errors in 2 files (checked 10 source files)",
+    "  2 failed\n  5 passed (3.1s)",
+])
+def test_output_failed_markers(text):
+    assert output_failed(text)
+
+
+@pytest.mark.parametrize("text", [
+    "test_x.py::test_error PASSED\ntest_x.py::test_fail_path PASSED\n===== 2 passed in 0.10s =====",
+    "Tests  300 passed (300)",
+    "Tests:       80 passed, 80 total",
+    " 14 pass\n 0 fail\n Ran 14 tests",
+    "ok  \texample.com/pkg\t0.01s",
+    "test result: ok. 4 passed; 0 failed",
+    "✖ 6 problems (0 errors, 6 warnings)",
+    "exit code: 0",
+    "Success: no issues found in 3 source files",
+    "handles error: missing file\nall good",
+    "",
+])
+def test_output_failed_ignores_passing_runs(text):
+    assert not output_failed(text)
+
+
+def _bash_session(tmp_path, cmd, content, is_error=False, tur=None):
+    sid = "00000000-0000-4000-8000-0000000000b1"
+    base = {"sessionId": sid, "cwd": "/tmp/r", "isSidechain": False}
+    rows = [
+        {**base, "type": "user", "uuid": "u1", "timestamp": "2026-10-01T08:00:00Z", "promptId": "p1",
+         "origin": {"kind": "human"}, "message": {"role": "user", "content": "go"}},
+        {**base, "type": "assistant", "uuid": "a1", "timestamp": "2026-10-01T08:00:01Z", "requestId": "r1",
+         "message": {"model": "claude-opus-5-5", "usage": {"output_tokens": 1},
+                     "content": [{"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": cmd}}]}},
+        {**base, "type": "user", "uuid": "u2", "timestamp": "2026-10-01T08:00:05Z", "promptId": "p1",
+         "toolUseResult": tur if tur is not None else {"stdout": content, "stderr": "", "interrupted": False},
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1",
+                                                    "content": content, "is_error": is_error}]}},
+    ]
+    p = tmp_path / f"{sid}.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return parse(str(p)).tool_calls[0]
+
+
+def test_masked_failure_only_for_test_build_intents(tmp_path):
+    out = "=== 1 failed in 0.1s ==="
+    assert _bash_session(tmp_path, "pytest -q 2>&1 | tail -3", out).is_error
+    assert _bash_session(tmp_path, "pnpm build | tail", [{"type": "text", "text": "x.ts(1,1): error TS2304: y"}]).is_error
+    assert not _bash_session(tmp_path, "cat ci.log", out).is_error           # reading a log is not a run
+    assert not _bash_session(tmp_path, "pytest -q", "3 passed in 0.1s").is_error
+    assert _bash_session(tmp_path, "pytest", "Exit code 1\nboom", is_error=True).is_error
+
+
+def test_interrupted_bash_is_error(tmp_path):
+    tc = _bash_session(tmp_path, "pytest", "partial", tur={"stdout": "partial", "stderr": "", "interrupted": True})
+    assert tc.is_error
