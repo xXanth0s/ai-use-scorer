@@ -1,0 +1,27 @@
+{
+  "name": "scorer-agent-mastra",
+  "type": "module",
+  "private": true,
+  "description": "Optional Mastra sidecar for the scorer analyst chat (Python agent stays the default).",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "start": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "3.0.82",
+    "@mastra/ai-sdk": "1.10.4",
+    "@mastra/core": "1.70.0",
+    "@mastra/memory": "1.30.0",
+    "@mastra/observability": "1.18.0",
+    "ai": "6.0.182",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

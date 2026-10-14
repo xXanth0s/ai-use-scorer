@@ -47,7 +47,12 @@ JSON endpoints (all GET, ``Cache-Control: no-store``)
 /api/trend?end=YYYY-MM-DD&days=7
     {"days": [YYYY-MM-DD...], "series": {"V", "H", "B_min", "C", "active_h": [number|null...]}}
 GET /api/chat/status
-    {"available": bool, "model": str|null, "reason": str|null}     # agent.has_key(), agent.MODEL
+    {"available": bool, "model": str|null, "backend": "python"|"mastra", "reason": str|null}
+GET /api/agent/system-prompt
+    {"system_prompt": str, "today": "YYYY-MM-DD", "max_steps": int}   # agent._SYSTEM, for agent-mastra/
+POST /api/tools/<query_db|get_turn|get_metric|list_sessions>   body {"input": {...}, "n0"?: int, "day"?}
+    agent.run_tool(conn, name, input, n0=n0, day=day) -> {ok, data|error, summary, citations}
+    The Mastra sidecar's only data access (read-only, free text clipped to 80 chars).
 POST /api/chat   body {"messages": [{"role": "user"|"assistant", "content": str}], "day"?: "YYYY-MM-DD"}
     Server-Sent Events (text/event-stream), one `data: <json>\n\n` per event from
     scorer.agent.stream_chat(conn, messages, day):
@@ -55,7 +60,11 @@ POST /api/chat   body {"messages": [{"role": "user"|"assistant", "content": str}
       {"type": "tool-start", "id", "name", "input"}                 # string inputs clipped to 80
       {"type": "tool-result", "id", "name", "ok", "summary",       # summary/labels clipped to 80
        "citations": [{"n", "turn_id", "session_id", "label"}]}
-      {"type": "error", "message"}   {"type": "done"}              # stream always ends with done
+      {"type": "subagent-start", "id", "name", "task"}            # mastra backend only
+      {"type": "subagent-result", "id", "name", "summary"}
+      {"type": "error", "message"}   {"type": "done", "model"?, "backend"}   # stream always ends with done
+    If SCORER_MASTRA_URL is set and <url>/health answers within 300 ms, the stream is proxied from
+    <url>/chat (agent-mastra/); otherwise agent.stream_chat serves it. Both pass sanitize_event.
     501 {"error": "not_implemented"} when scorer.agent is not importable; 400 on a bad body.
 Unknown paths -> 404 {"error"}; bad day/turn -> 400/404.
 """
@@ -66,6 +75,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -425,6 +435,23 @@ def turn_payload(conn, turn_id: int) -> dict | None:
     }
 
 
+_C_NOT_CAUSE = ("C:event:", "C:detection:", "C:defect_caught", "C:resolved")
+
+
+def c_total(vals: dict) -> float | None:
+    """Correction count for one day, counted by cause only (matches report.Metrics.c_total).
+    judge.py writes C:cause:<cause> plus C:event:* / C:detection:* / C:defect_caught / C:resolved
+    for the same episodes, so summing every C:* row would count each correction ~3x."""
+    if "C" in vals:
+        return vals["C"]
+    causes = [v for k, v in vals.items() if k.startswith("C:cause:")]
+    if not causes:
+        causes = [v for k, v in vals.items() if k.startswith("C:") and not k.startswith(_C_NOT_CAUSE)]
+    if causes:
+        return sum(v or 0 for v in causes)
+    return 0.0 if any(k.startswith(("C:", "C_")) for k in vals) else None
+
+
 def trend_payload(conn, end_day: str, n: int) -> dict:
     run_id = dbm.latest_run_id(conn)
     y, m, d = map(int, end_day.split("-"))
@@ -434,8 +461,7 @@ def trend_payload(conn, end_day: str, n: int) -> dict:
         vals = {r["metric"]: r["value"] for r in _metrics(conn, run_id, "day", day)}
         for k in ("V", "H", "B_min"):
             series[k].append(vals.get(k))
-        cs = [v for k, v in vals.items() if k == "C" or k.startswith("C:")]
-        series["C"].append(sum(v or 0 for v in cs) if cs else None)
+        series["C"].append(c_total(vals))
         act = vals.get("active_s")
         if act is None:
             c = computed_day(conn, day)
@@ -453,15 +479,35 @@ def _load_agent():
         return None
 
 
+MASTRA_ENV = "SCORER_MASTRA_URL"
+MASTRA_HEALTH_TIMEOUT_S = 0.3
+TOOL_NAMES = ("query_db", "get_turn", "get_metric", "list_sessions")
+
+
+def mastra_url() -> str | None:
+    """The optional Mastra sidecar (agent-mastra/), if SCORER_MASTRA_URL is set and /health answers
+    within 300 ms. Anything else -> None and the Python agent serves the chat (the default)."""
+    url = (os.environ.get(MASTRA_ENV) or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        return None
+    try:
+        with urllib.request.urlopen(url + "/health", timeout=MASTRA_HEALTH_TIMEOUT_S) as r:
+            return url if r.status == 200 else None
+    except Exception:
+        return None
+
+
 def chat_status() -> dict:
     agent = _load_agent()
+    backend = "mastra" if mastra_url() else "python"
     if agent is None:
-        return {"available": False, "model": None, "reason": "agent module not installed"}
+        return {"available": backend == "mastra", "model": None, "backend": backend,
+                "reason": None if backend == "mastra" else "agent module not installed"}
     try:
         ok = bool(agent.has_key())
     except Exception:
         ok = False
-    return {"available": ok, "model": getattr(agent, "MODEL", None),
+    return {"available": ok, "model": getattr(agent, "MODEL", None), "backend": backend,
             "reason": None if ok else "no ANTHROPIC_API_KEY"}
 
 
@@ -492,10 +538,21 @@ def sanitize_event(ev) -> dict:
                   "label": clip(c.get("label"), CLIP)} for c in (ev.get("citations") or [])[:50] if isinstance(c, dict)]
         return {"type": t, "id": clip(str(ev.get("id")), 64), "name": clip(ev.get("name"), 40),
                 "ok": bool(ev.get("ok")), "summary": clip(ev.get("summary"), CLIP), "citations": cites}
+    if t == "subagent-start":
+        return {"type": t, "id": clip(str(ev.get("id")), 64), "name": clip(ev.get("name"), 40),
+                "task": clip(ev.get("task"), CLIP)}
+    if t == "subagent-result":
+        return {"type": t, "id": clip(str(ev.get("id")), 64), "name": clip(ev.get("name"), 40),
+                "summary": clip(ev.get("summary"), CLIP)}
     if t == "error":
         return {"type": t, "message": clip(ev.get("message"), CLIP)}
     if t == "done":
-        return {"type": "done"}
+        out = {"type": "done"}
+        if ev.get("model"):
+            out["model"] = clip(str(ev.get("model")), 40)
+        if ev.get("backend") in ("python", "mastra"):
+            out["backend"] = ev["backend"]
+        return out
     return {"type": "error", "message": f"unknown event type {clip(str(t), 30)}"}
 
 
@@ -532,26 +589,53 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # never leak data in errors
             return self._json(500, {"error": type(e).__name__})
 
+    def _body(self):
+        n = min(int(self.headers.get("Content-Length") or 0), 1_000_000)
+        body = json.loads(self.rfile.read(n) or b"{}")
+        if not isinstance(body, dict):
+            raise ValueError
+        return body
+
     def do_POST(self):  # noqa: N802
         path = urlparse(self.path).path
+        m = re.fullmatch(r"/api/tools/([a-z_]+)", path)
+        if m:
+            return self._tool(m.group(1))
         if path != "/api/chat":
             return self._json(404, {"error": "unknown endpoint"})
         try:
-            n = min(int(self.headers.get("Content-Length") or 0), 1_000_000)
-            body = json.loads(self.rfile.read(n) or b"{}")
-            if not isinstance(body, dict) or not isinstance(body.get("messages", []), list):
+            body = self._body()
+            if not isinstance(body.get("messages", []), list):
                 raise ValueError
         except (ValueError, json.JSONDecodeError):
             return self._json(400, {"error": "body must be {messages: [{role, content}], day?}"})
         return self._chat(body)
 
-    def _chat(self, body):
+    def _tool(self, name):
+        """POST /api/tools/<name> {input, n0?, day?} -> agent.run_tool(...). The Mastra sidecar's only
+        data access: read-only, free text clipped to 80, citations numbered from n0."""
+        if name not in TOOL_NAMES:
+            return self._json(404, {"error": f"unknown tool, expected one of {', '.join(TOOL_NAMES)}"})
         agent = _load_agent()
-        if agent is None or not hasattr(agent, "stream_chat"):
-            return self._json(501, {"error": "not_implemented", "detail": "chat backend not available yet"})
-        msgs = [{"role": m.get("role"), "content": str(m.get("content") or "")}
-                for m in body.get("messages", []) if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+        if agent is None:
+            return self._json(501, {"error": "not_implemented"})
+        try:
+            body = self._body()
+            inp = body.get("input", {})
+            n0 = int(body.get("n0", 1) or 1)
+            if not isinstance(inp, dict) or n0 < 1:
+                raise ValueError
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return self._json(400, {"error": "body must be {input: {...}, n0?: int >= 1, day?: YYYY-MM-DD}"})
         day = body.get("day") if isinstance(body.get("day"), str) and DAY_RE.match(body.get("day")) else None
+        conn = dbm.connect(self.db_path)
+        try:
+            r = agent.run_tool(conn, name, inp, n0=n0, day=day)
+        finally:
+            conn.close()
+        return self._json(200, r)
+
+    def _sse_head(self) -> bool:
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -560,12 +644,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
+            return True
         except (BrokenPipeError, ConnectionResetError):
+            return False
+
+    def _chat(self, body):
+        msgs = [{"role": m.get("role"), "content": str(m.get("content") or "")}
+                for m in body.get("messages", []) if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+        day = body.get("day") if isinstance(body.get("day"), str) and DAY_RE.match(body.get("day")) else None
+        upstream = mastra_url()
+        if upstream:
+            return self._chat_proxy(upstream, msgs, day)
+        agent = _load_agent()
+        if agent is None or not hasattr(agent, "stream_chat"):
+            return self._json(501, {"error": "not_implemented", "detail": "chat backend not available yet"})
+        if not self._sse_head():
             return
         conn = dbm.connect(self.db_path)
         sent_done = False
         try:
             for ev in agent.stream_chat(conn, msgs, day):
+                if isinstance(ev, dict) and ev.get("type") == "done":
+                    ev = {**ev, "backend": "python"}
                 ev = sanitize_event(ev)
                 sent_done = sent_done or ev.get("type") == "done"
                 if not self._sse(ev):
@@ -575,7 +675,37 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         if not sent_done:
-            self._sse({"type": "done"})
+            self._sse({"type": "done", "backend": "python"})
+
+    def _chat_proxy(self, upstream: str, msgs, day):
+        """Relay the Mastra sidecar's SSE stream; every event still passes sanitize_event here."""
+        me = f"http://127.0.0.1:{self.server.server_address[1]}"
+        req = urllib.request.Request(upstream + "/chat", method="POST",
+                                     data=json.dumps({"messages": msgs, "day": day}).encode(),
+                                     headers={"Content-Type": "application/json", "X-Scorer-Url": me})
+        if not self._sse_head():
+            return
+        sent_done = False
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                for raw in r:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        ev = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    ev = sanitize_event(ev)
+                    sent_done = sent_done or ev.get("type") == "done"
+                    if not self._sse(ev):
+                        return
+                    if sent_done:
+                        break
+        except Exception as e:
+            self._sse({"type": "error", "message": f"mastra backend failed: {type(e).__name__}"})
+        if not sent_done:
+            self._sse({"type": "done", "backend": "mastra"})
 
     def _sse(self, ev) -> bool:
         try:
@@ -590,6 +720,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/chat/status":
                 return self._json(200, chat_status())
+            if path == "/api/agent/system-prompt":
+                agent = _load_agent()
+                if agent is None:
+                    return self._json(501, {"error": "not_implemented"})
+                return self._json(200, {"system_prompt": agent._SYSTEM, "today": agent._today(),
+                                        "max_steps": agent.MAX_STEPS})
             if path == "/api/days":
                 return self._json(200, list_days(conn))
             m = re.fullmatch(r"/api/day/([^/]+)", path)

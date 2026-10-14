@@ -6,6 +6,7 @@ import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
+from http.server import ThreadingHTTPServer
 
 import pytest
 
@@ -111,6 +112,7 @@ def server(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("scorer")
     mp = pytest.MonkeyPatch()
     mp.setenv("SCORER_HOME", str(tmp))
+    mp.delenv("SCORER_MASTRA_URL", raising=False)
     path = str(tmp / "scorer.db")
     info = build_fixture(path)
     srv = serve.make_server(path, 0)
@@ -285,7 +287,7 @@ def test_chat_sse(server, monkeypatch):
     base, _ = server
     monkeypatch.setattr(serve, "_load_agent", lambda: FakeAgent)
     assert json.loads(get(base, "/api/chat/status")[1]) == {"available": True, "model": "claude-opus-5-5",
-                                                            "reason": None}
+                                                            "backend": "python", "reason": None}
     req = urllib.request.Request(base + "/api/chat", method="POST", data=json.dumps(
         {"messages": [{"role": "user", "content": "why is V low?"}, {"role": "system", "content": "x"}],
          "day": DAY}).encode())
@@ -298,6 +300,7 @@ def test_chat_sse(server, monkeypatch):
     assert evs[1]["citations"][0]["turn_id"] == 2 and len(evs[1]["citations"][0]["label"]) <= 80
     assert evs[1]["summary"].startswith("7 turns")
     assert evs[2]["delta"] == f"day={DAY} msgs=1"             # non user/assistant roles dropped
+    assert evs[3] == {"type": "done", "backend": "python"}
 
 
 def test_chat_agent_crash(server, monkeypatch):
@@ -317,3 +320,160 @@ def test_static_and_404(server):
     assert get(base, "/fonts/HankenGrotesk-var-latin.woff2")[2]["Content-Type"] == "font/woff2"
     assert get(base, "/../serve.py")[0] == 404
     assert get(base, "/api/unknown")[0] == 404
+
+
+# --- C counted by cause only (trend) ------------------------------------------------------------
+
+def test_c_total_counts_causes_only():
+    assert serve.c_total({}) is None
+    assert serve.c_total({"C": 4, "C:cause:info_missing": 9}) == 4
+    rows = {"C:cause:info_missing": 2, "C:cause:instruction_violated": 1, "C:event:correction": 3,
+            "C:detection:human_review": 3, "C:defect_caught": 1, "C:resolved": 3}
+    assert serve.c_total(rows) == 3
+    assert serve.c_total({"C:info_missing": 2, "C:event:correction": 2, "C:resolved": 2}) == 2  # legacy C:<cause>
+    assert serve.c_total({"C:event:correction": 0}) == 0.0                                    # judged, no cause rows
+
+
+def test_trend_c_by_cause(tmp_path):
+    path = str(tmp_path / "c.db")
+    build_fixture(path)
+    conn = dbm.connect(path)
+    rid = dbm.latest_run_id(conn)
+    for metric, v in [("C:cause:info_missing", 2), ("C:cause:requirement_changed", 1), ("C:event:correction", 3),
+                      ("C:detection:human_review", 3), ("C:defect_caught", 1), ("C:resolved", 3)]:
+        conn.execute("INSERT INTO metric_value(run_id, metric, definition_version, scope_type, scope_id, value)"
+                     " VALUES (?,?,?,?,?,?)", (rid, metric, "v1", "day", DAY, v))
+    conn.commit()
+    assert serve.trend_payload(conn, DAY, 3)["series"]["C"] == [None, None, 3]
+    conn.close()
+
+
+# --- tool + system-prompt endpoints (Mastra sidecar data access) --------------------------------
+
+def test_tools_endpoint(server):
+    base, info = server
+    t0, t1 = info["turn_ids"][0], info["turn_ids"][1]
+
+    def tool(name, body):
+        code, raw = post(base, f"/api/tools/{name}", json.dumps(body).encode())
+        assert code == 200, (name, raw[:200])
+        assert_private(raw)
+        return json.loads(raw)
+
+    r = tool("query_db", {"input": {"sql": "SELECT id AS turn_id, prompt_text FROM turn ORDER BY id LIMIT 3"},
+                          "n0": 4})
+    assert r["ok"] and [c["n"] for c in r["citations"]] == [4, 5, 6]
+    assert all(len(row[1] or "") <= 80 for row in r["data"]["rows"])
+    r = tool("get_turn", {"input": {"turn_id": t0}, "n0": 9})
+    assert r["ok"] and r["citations"][0] == {**r["citations"][0], "n": 9, "turn_id": t0}
+    assert r["data"]["prompt"].endswith("…") and r["data"]["n"] == 9
+    r = tool("get_metric", {"input": {"metric": "V"}, "day": DAY})
+    assert r["ok"] and r["data"]["values"][0]["value"] == 0.5 and r["citations"][0]["turn_id"] == t1
+    r = tool("list_sessions", {"input": {}, "day": DAY})
+    assert r["ok"] and len(r["data"]["sessions"]) == 3
+    r = tool("query_db", {"input": {"sql": "DELETE FROM turn"}})
+    assert r["ok"] is False and "SELECT" in r["error"]
+    assert post(base, "/api/tools/drop_tables", b"{}")[0] == 404
+    assert post(base, "/api/tools/get_turn", b'{"input": [1]}')[0] == 400
+    assert post(base, "/api/tools/get_turn", b"nope")[0] == 400
+
+
+def test_system_prompt_endpoint(server):
+    from scorer import agent
+    base, _ = server
+    code, raw, _ = get(base, "/api/agent/system-prompt")
+    d = json.loads(raw)
+    assert code == 200 and d["system_prompt"] == agent._SYSTEM and d["max_steps"] == agent.MAX_STEPS
+    assert "<grounding>" in d["system_prompt"] and len(d["today"]) == 10
+
+
+# --- /api/chat proxy to the optional Mastra sidecar -------------------------------------------
+
+class _Upstream:
+    """Fake agent-mastra sidecar: /health + /chat SSE (with over-long fields serve.py must clip)."""
+
+    def __init__(self, health_delay: float = 0.0):
+        import http.server
+        import time
+        seen = self.seen = {}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):  # noqa: N802
+                time.sleep(health_delay)
+                body = b'{"ok": true}'
+                self.send_response(200 if self.path == "/health" else 404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):  # noqa: N802
+                n = int(self.headers.get("Content-Length") or 0)
+                seen["body"] = json.loads(self.rfile.read(n))
+                seen["scorer_url"] = self.headers.get("X-Scorer-Url")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                evs = [{"type": "subagent-start", "id": "d1", "name": "turnInvestigator", "task": LONG_PROMPT},
+                       {"type": "tool-start", "id": "t1", "name": "get_turn", "input": {"turn_id": 2}},
+                       {"type": "tool-result", "id": "t1", "name": "get_turn", "ok": True, "summary": "turn 2",
+                        "citations": [{"n": 1, "turn_id": 2, "session_id": "a", "label": LONG_PROMPT}]},
+                       {"type": "subagent-result", "id": "d1", "name": "turnInvestigator", "summary": LONG_PROMPT},
+                       {"type": "text-delta", "delta": "answer [1]"},
+                       {"type": "done", "model": "claude-opus-5-5", "backend": "mastra"}]
+                for ev in evs:
+                    self.wfile.write(b"data: " + json.dumps(ev).encode() + b"\n\n")
+                    self.wfile.flush()
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def chat(base) -> list[dict]:
+    req = urllib.request.Request(base + "/api/chat", method="POST", data=json.dumps(
+        {"messages": [{"role": "user", "content": "why is V low?"}], "day": DAY}).encode())
+    with urllib.request.urlopen(req, timeout=5) as r:
+        raw = r.read()
+    assert SENTINEL.encode() not in raw
+    return sse_events(raw)
+
+
+def test_chat_proxy_on(server, monkeypatch):
+    base, _ = server
+    up = _Upstream()
+    try:
+        monkeypatch.setattr(serve, "_load_agent", lambda: FakeAgent)
+        monkeypatch.setenv("SCORER_MASTRA_URL", up.url)
+        assert json.loads(get(base, "/api/chat/status")[1])["backend"] == "mastra"
+        evs = chat(base)
+        assert [e["type"] for e in evs] == ["subagent-start", "tool-start", "tool-result", "subagent-result",
+                                           "text-delta", "done"]
+        assert evs[-1] == {"type": "done", "model": "claude-opus-5-5", "backend": "mastra"}
+        assert len(evs[0]["task"]) <= 80 and len(evs[3]["summary"]) <= 80
+        assert len(evs[2]["citations"][0]["label"]) <= 80
+        assert up.seen["body"] == {"messages": [{"role": "user", "content": "why is V low?"}], "day": DAY}
+        assert up.seen["scorer_url"] == base
+    finally:
+        up.close()
+
+
+def test_chat_proxy_off(server, monkeypatch):
+    base, _ = server
+    monkeypatch.setattr(serve, "_load_agent", lambda: FakeAgent)
+    monkeypatch.setenv("SCORER_MASTRA_URL", "http://127.0.0.1:9")          # nothing listening
+    assert json.loads(get(base, "/api/chat/status")[1])["backend"] == "python"
+    assert chat(base)[-1] == {"type": "done", "backend": "python"}
+    slow = _Upstream(health_delay=1.0)                                     # /health slower than 300 ms
+    try:
+        monkeypatch.setenv("SCORER_MASTRA_URL", slow.url)
+        assert chat(base)[-1] == {"type": "done", "backend": "python"}
+        assert "body" not in slow.seen
+    finally:
+        slow.close()
