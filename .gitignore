@@ -8,3 +8,5 @@ __pycache__/
 report_fallback.txt
 node_modules/
 agent-mastra/dist/
+demo/*.db-wal
+demo/*.db-shm

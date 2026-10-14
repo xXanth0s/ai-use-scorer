@@ -1255,7 +1255,9 @@ def attribution_payload(conn, day: str) -> dict:
         d = raw.get(sec)
         out[sec] = {k: _bucket_ids(d.get(k)) for k in keys} if isinstance(d, dict) else None
     t = raw.get("tooling")
-    out["tooling"] = {k: _num(t.get(k)) for k in TOOLING_SPLIT} if isinstance(t, dict) else None
+    # judge gives tooling buckets as {count, turn_ids} (like the other sections) or as bare numbers
+    out["tooling"] = {k: _num(v.get("count") if isinstance(v := t.get(k), dict) else v)
+                      for k in TOOLING_SPLIT} if isinstance(t, dict) else None
     return out
 
 

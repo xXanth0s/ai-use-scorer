@@ -887,7 +887,7 @@ def test_strengths_and_attribution(server, monkeypatch):
                         "environment": {"count": 0, "turn_ids": []}, "secret": LONG_PROMPT},
         "verification": {"asked_by_you": {"count": 1, "turn_ids": [t0]}, "agent_initiative": {"count": 0},
                          "none": {"count": 1, "turn_ids": [t1]}},
-        "tooling": {"you": 3, "agent": "4", "default": None, "x": LONG_PROMPT}}, raising=False)
+        "tooling": {"you": 3, "agent": "4", "default": {"count": 2, "turn_ids": [t0]}, "x": LONG_PROMPT}}, raising=False)
     code, raw, _ = get(base, f"/api/strengths?day={DAY}&x=1")
     assert code == 200 and SENTINEL.encode() not in raw
     it = json.loads(raw)["items"][0]
@@ -899,7 +899,7 @@ def test_strengths_and_attribution(server, monkeypatch):
     assert a["corrections"]["user_preventable"] == {"count": 2, "turn_ids": [t1]}
     assert a["corrections"]["unclear"] == {"count": 0, "turn_ids": []} and "secret" not in a["corrections"]
     assert a["verification"]["agent_initiative"] == {"count": 0, "turn_ids": []}
-    assert a["tooling"] == {"you": 3, "agent": 4, "default": 0}
+    assert a["tooling"] == {"you": 3, "agent": 4, "default": 2}
     monkeypatch.setattr(judge, "attribution", lambda conn, day: 1 / 0, raising=False)
     a = json.loads(get(base, f"/api/attribution?day={DAY}")[1])
     assert a["available"] is True and a["corrections"] is None and "ZeroDivisionError" in a["error"]
