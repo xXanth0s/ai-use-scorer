@@ -3,7 +3,7 @@
 Contract (spec §5): read ALL of stdin, append exactly one JSON line to
 `events_path()` with a single O_APPEND write, print nothing, exit 0 always,
 finish well under 1 s. At Stop/SessionEnd, attach a git snapshot of the
-payload's cwd.
+payload's cwd (and at SessionStart, as the baseline the Stop deltas are diffed against).
 
 Line schema:
   {"at": utc iso, "agent": "claude|codex", "event": <argv --event>,
@@ -29,7 +29,7 @@ MSG_CLIP = 2048          # last_assistant_message etc. (full text lives in the t
 GIT_BUDGET_S = 0.7       # total wall budget for the three git calls
 GIT_CALL_TIMEOUT_S = 0.5
 MAX_PATHS = 200
-SNAPSHOT_EVENTS = ("Stop", "SessionEnd")
+SNAPSHOT_EVENTS = ("SessionStart", "Stop", "SessionEnd")   # SessionStart = baseline for hand-edit deltas
 
 
 def _parse_argv(argv: list[str]) -> tuple[str | None, str | None, list[str]]:
@@ -180,7 +180,9 @@ def _git_snapshot(cwd, budget: float = GIT_BUDGET_S) -> dict | None:
         "insertions": 0,
         "deletions": 0,
         "untracked_count": len(untracked),
-        "changed_paths": changed[:MAX_PATHS],
+        # tracked changes + untracked files (a hand edit may create a new file), MAX_PATHS in total
+        "changed_paths": (changed + untracked)[:MAX_PATHS],
+        "untracked_paths": untracked[:max(0, MAX_PATHS - len(changed))],
     }
     if stat:
         last = stat.strip().splitlines()[-1] if stat.strip() else ""

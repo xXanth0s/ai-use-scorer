@@ -25,7 +25,7 @@ Pure helpers for report / dashboard (all read-only, `day` = local "YYYY-MM-DD" o
 Metric ids written (day scope unless noted; also "all" scope for the headline set):
   active_s, overlap_s, parallel_s, turns, sessions,
   gap_bucket:<lt30s|30s-2m|2-5m|5-15m|break>, gap_median_s, switch_share,
-  interrupts, thrown_s,
+  interrupts, thrown_s, queued_prompts,
   V, V_fail_share, V_final, V_human, V_tier:<verified_pass|verified_fail|inspected|none>,
   H (unit "edits" or "edits(partial)"), H_repair, H_own,
   B_min,
@@ -259,8 +259,21 @@ def _words(text: str | None) -> int:
     return len((text or "").split())
 
 
+def _command_only(t: dict) -> bool:
+    """A slash command the agent never worked on (/exit, /clear, ...): no human wait before or after it."""
+    return t["prompt_kind"] == "command" and not t["agent_started_at"]
+
+
+def _abandoned(t: dict) -> bool:
+    """Prompt interrupted before any agent output (Esc, then resubmitted): no agent end to wait after."""
+    return t["end_source"] == "interrupt" and not t["agent_started_at"]
+
+
 def gaps(conn, day: str | None = None) -> list[Gap]:
-    turns = [t for t in _turns(conn) if t["human"]]
+    """Per session, consecutive human-lane turns. Command-only turns are skipped (the gap bridges them);
+    an abandoned turn starts no gap (its resubmission is not a new human response), but the gap that
+    ends at it counts (that is when the human responded)."""
+    turns = [t for t in _turns(conn) if t["human"] and not _command_only(t)]
     enq = _enqueue_map(conn)
     prompts = sorted((t["start"], t["session_id"] or "") for t in turns if t["start"])
     pts = [p[0] for p in prompts]
@@ -272,6 +285,8 @@ def gaps(conn, day: str | None = None) -> list[Gap]:
         for prev, nxt in zip(lst, lst[1:]):
             if not prev["end"] or not nxt["start"]:
                 continue  # crash/unknown end -> undefined
+            if _abandoned(prev):
+                continue
             if day and nxt["day"] != day:
                 continue
             start = enq.get(nxt["id"]) if (nxt["prompt_kind"] == "queued" or nxt["id"] in enq) else None
@@ -310,6 +325,25 @@ def interruptions(conn, day: str | None = None) -> list[dict]:
         agent_s = max(0.0, (at - start).total_seconds()) if (at and start) else None
         out.append({"turn_id": e["turn_id"], "session_id": e["session_id"], "at": e["at"], "agent_s": agent_s,
                     "day": d})
+    return out
+
+
+# --- queued prompts ----------------------------------------------------------------------------
+
+def queued_prompts(conn, day: str | None = None) -> list[dict]:
+    """Prompts typed while the agent was busy: turns with prompt_kind="queued", plus queued prompts Claude
+    absorbed into the running turn (queue remove reason=absorbed_mid_turn; no turn of their own)."""
+    tmap = {t["id"]: t for t in _turns(conn)}
+    out = [{"turn_id": t["id"], "session_id": t["session_id"], "day": t["day"], "absorbed": False}
+           for t in tmap.values() if t["human"] and t["prompt_kind"] == "queued" and (not day or t["day"] == day)]
+    for e in _rows(conn, "SELECT session_id, turn_id, at, data FROM event WHERE kind='queue_enqueue'"
+                         " AND data LIKE '%absorbed_mid_turn%'"):
+        t = tmap.get(e["turn_id"])
+        if t is not None and not t["human"]:
+            continue
+        d = (t["day"] if t else None) or local_day(e["at"])
+        if not day or d == day:
+            out.append({"turn_id": e["turn_id"], "session_id": e["session_id"], "day": d, "absorbed": True})
     return out
 
 
@@ -354,6 +388,25 @@ def _file_edits(conn) -> dict[int, list[dict]]:
 
 def _is_edit(c: dict) -> bool:
     return c["kind"] == "edit" or (c["kind"] == "bash" and c["bash_intent"] == "edit")
+
+
+def _roots(t: dict | None) -> tuple:
+    return tuple(r for r in ((t or {}).get("s_cwd"), (t or {}).get("s_repo")) if r)
+
+
+def _v_paths(c: dict, fe: dict[int, list[dict]], t: dict | None) -> list[str]:
+    """Edited paths that count for V: inside the session's cwd/repo tree, not "." or scratch space."""
+    rs = _roots(t)
+    return [p for p in _edit_paths(c, fe) if classify.v_edit_path(p, rs)]
+
+
+def _is_v_edit(c: dict, fe: dict[int, list[dict]], t: dict | None) -> bool:
+    """An edit call for V batches: an edit whose paths are unknown, or with at least one V path
+    (a cp/rm in /tmp or the agent's scratchpad is not a code edit)."""
+    if not _is_edit(c):
+        return False
+    ps = _edit_paths(c, fe)
+    return not ps or bool(_v_paths(c, fe, t))
 
 
 def _is_check(c: dict) -> bool:
@@ -401,20 +454,21 @@ def verification_batches(conn, day: str | None = None) -> list[Batch]:
         batches: list[tuple[Batch, int]] = []   # (batch, index where the verifier scan starts)
         cur: Batch | None = None
         for i, c in enumerate(lst):
-            if _is_edit(c):
+            if _is_v_edit(c, fe, t):
                 if cur is None:
                     cur = Batch(t["session_id"], t["id"], t["day"], [], [], c["id"], order=(ti, i))
                     batches.append((cur, i + 1))
                 cur.edit_call_ids.append(c["id"])
                 cur.last_edit_call_id = c["id"]
-                for p in _edit_paths(c, fe):
+                for p in _v_paths(c, fe, t) or _edit_paths(c, fe):
                     if p not in cur.paths:
                         cur.paths.append(p)
                 batches[-1] = (cur, i + 1)
             elif _is_check(c):
                 cur = None
                 # `cat > f <<EOF … && pytest`: one call edits, then checks -> its own batch, verified by itself
-                own = [r["path"] for r in fe.get(c["id"], []) if r["path"]]
+                own = [r["path"] for r in fe.get(c["id"], []) if r["path"]
+                       and classify.v_edit_path(r["path"], _roots(t))]
                 if own and classify.edit_precedes_check(c["args_summary"] or ""):
                     b = Batch(t["session_id"], t["id"], t["day"], [c["id"]], list(dict.fromkeys(own)), c["id"],
                               order=(ti, i))
@@ -431,7 +485,7 @@ def verification_batches(conn, day: str | None = None) -> list[Batch]:
                         b.tier = "verified_fail" if c["is_error"] else "verified_pass"
                         b.verifier_call_id, b.verifier_initiator, b.relevance = c["id"], c["initiator"], rel
                         break
-                elif inspected is None and not _is_edit(c):
+                elif inspected is None and not _is_v_edit(c, fe, t):
                     if c["kind"] == "read" and _mentions(c["args_summary"], b.paths):
                         inspected = c
                     elif c["kind"] == "bash" and c["bash_intent"] == "git" and \
@@ -468,6 +522,20 @@ def _snapshot_paths(data) -> list[str] | None:
             return [x if isinstance(x, str) else (x.get("path") if isinstance(x, dict) else None) for x in v
                     if x]
     return None
+
+
+def _snapshot_meta(data) -> tuple[bool, set]:
+    """(baseline?, untracked paths) of a git_snapshot event's data."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return False, set()
+    if not isinstance(data, dict):
+        return False, set()
+    g = data.get("git") if isinstance(data.get("git"), dict) else data
+    u = g.get("untracked_paths")
+    return bool(data.get("baseline")), set(x for x in u if isinstance(x, str)) if isinstance(u, list) else set()
 
 
 def _snapshot_states(data) -> dict:
@@ -521,14 +589,21 @@ def hand_edits(conn, day: str | None = None) -> dict:
             if at is None or ps is None:
                 continue
             have_snap = True
-            by_sess.setdefault(sn["session_id"], []).append((at, sn["turn_id"], ps, _snapshot_states(sn["data"])))
+            base, untracked = _snapshot_meta(sn["data"])
+            by_sess.setdefault(sn["session_id"], []).append((at, sn["turn_id"], ps, _snapshot_states(sn["data"]),
+                                                             base, untracked))
         for sid, lst in by_sess.items():
             lst.sort(key=lambda x: x[0])
             prev_at, prev_paths, prev_states = None, set(), {}
-            for at, turn_id, ps, states in lst:
+            for at, turn_id, ps, states, base, untracked in lst:
                 cur = set(ps)
-                # new = first appearance vs the previous snapshot, or per-file state changed (if provided)
-                new = [p for p in ps if p not in prev_paths
+                if base:
+                    if prev_at is None:   # SessionStart state: what was dirty before the agent ran
+                        prev_at, prev_paths, prev_states = at, cur, states
+                    continue
+                # new = first appearance vs the previous snapshot, or per-file state changed (if provided).
+                # Without a baseline, untracked files in the session's first snapshot may predate it: skip them.
+                new = [p for p in ps if (p not in prev_paths and not (prev_at is None and p in untracked))
                        or (states.get(p) is not None and prev_states.get(p) is not None
                            and states[p] != prev_states[p])]
                 t = tmap.get(turn_id)
@@ -554,6 +629,9 @@ def hand_edits(conn, day: str | None = None) -> dict:
 
 
 def _path_in(p: str, paths: set) -> bool:
+    if p.endswith("/"):   # collapsed untracked dir (`?? newdir/`): any agent edit below it
+        d = p.rstrip("/")
+        return any(q == d or q.startswith(d + "/") or ("/" + d + "/") in q for q in paths)
     return any(p == q or q.endswith("/" + p) or p.endswith("/" + q) for q in paths)
 
 
@@ -635,9 +713,11 @@ def orientation(conn) -> dict[str, float]:
         if s0 and (t["session_id"] not in first or s0 < first[t["session_id"]]):
             first[t["session_id"]] = s0
     tsess = {t["id"]: t["session_id"] for t in turns}
+    tmap = {t["id"]: t for t in turns}
+    fe = _file_edits(conn)
     edit_at: dict[str, datetime] = {}
     for c in _tool_calls(conn):
-        if _is_edit(c) and c["ts"]:
+        if c["ts"] and _is_v_edit(c, fe, tmap.get(c["turn_id"])):
             sid = tsess.get(c["turn_id"])
             if sid and (sid not in edit_at or c["ts"] < edit_at[sid]):
                 edit_at[sid] = c["ts"]
@@ -739,6 +819,8 @@ def _emit_scope(w: _W, conn, day: str | None) -> None:
     if nb:
         w.put("gap_median_s", st, sid, statistics.median(g.gap_s for g in nb), "s", len(nb))
         w.put("switch_share", st, sid, _share(sum(g.switched for g in nb), len(nb)), "share", len(nb))
+
+    w.put("queued_prompts", st, sid, len(queued_prompts(conn, day)), "prompts", len(turns))
 
     ints = interruptions(conn, day)
     w.put("interrupts", st, sid, len(ints), "count", len(ints),

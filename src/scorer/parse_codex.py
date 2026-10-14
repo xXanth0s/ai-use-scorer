@@ -38,7 +38,6 @@ from .parse_claude import output_failed
 from .model import ApiCall, Bundle, Event, FileEdit, Session, ToolCall, Turn, clip, iso, parse_ts
 
 ARGS_MAX = 500
-HUMAN_ACTION_RE = re.compile(r"\b(test|tests|run|lint|verify|check|pytest)\b", re.I)
 INNER_TOOL_RE = re.compile(r"\btools\.(\w+)\s*\(")
 # priority when an `exec` script calls several tools
 INNER_PRIORITY = ("apply_patch", "exec_command", "write_stdin", "view_image", "web__run")
@@ -460,9 +459,9 @@ class _Parser:
         if t.prompt_kind == "command":
             return "default", "2:command"
         if intent in ("test", "build") and t.prompt_text:
-            m = HUMAN_ACTION_RE.search(t.prompt_text)
-            if m:
-                return "human", "3:prompt:" + clip(m.group(0), 30)
+            span = classify.human_check_request(t.prompt_text)
+            if span:
+                return "human", "3:prompt:" + clip(span, 60)
         return "agent", "5"
 
     def _on_item(self, item: dict, p: dict, ts: str, idx: int) -> None:
@@ -559,6 +558,8 @@ class _Parser:
             for p in paths:
                 if cwd and not os.path.isabs(p):
                     p = os.path.join(cwd, p)
+                if classify.noise_edit_path(p, self.cwd):
+                    continue   # `cp x .`, agent scratch space
                 if p not in seen:
                     seen.add(p)
                     self._edit(tuid, p, 0, 0)
@@ -721,7 +722,8 @@ class _Parser:
         m = self.meta
         git = m.get("git") if isinstance(m.get("git"), dict) else {}
         first_ts = _ts(m.get("timestamp")) or (_ts(self.records[0].get("timestamp")) if self.records else None)
-        s = Session(id=self.sid, agent="codex", cwd=m.get("cwd"), repo=m.get("cwd"), branch=git.get("branch"),
+        repo, br = classify.repo_root(m.get("cwd"))   # worktrees group under their main repo
+        s = Session(id=self.sid, agent="codex", cwd=m.get("cwd"), repo=repo, branch=git.get("branch") or br,
                     transcript_path=self.path,
                     forked_from=m.get("forked_from_id") or m.get("parent_thread_id"),
                     started_at=first_ts, ended_at=last_ts or first_ts,

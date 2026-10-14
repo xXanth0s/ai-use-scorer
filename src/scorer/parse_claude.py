@@ -21,13 +21,24 @@ from .model import (INTERRUPT_PREFIX, ApiCall, Bundle, Event, FileEdit, Session,
                     parse_ts)
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
-RULE3 = re.compile(r"\b(test|tests|run|lint|verify|check|pytest)\b", re.I)
 MAX_ARGS = 500
 BREAK = timedelta(minutes=15)   # spec: gap > 15 min = break
+ABANDON = timedelta(minutes=10)  # prompt w/o agent output resubmitted within this = Esc before first output
 CAP = timedelta(seconds=60)     # max turn_duration overshoot past the last agent entry / next prompt
 CMD_NAME = re.compile(r"<command-name>\s*/?([^<\s]+)\s*</command-name>")
 SKILL_BASE = "Base directory for this skill"
 PEER_PREFIX = "Another Claude session sent a message"  # peer relay, sometimes without isMeta
+# Claude Code's own CLI commands: session plumbing, not tooling. Recorded as event "command_builtin".
+# (/review is left out on purpose: it is commonly a user/plugin skill of the same name.)
+BUILTIN_COMMANDS = frozenset({
+    "exit", "quit", "clear", "reset", "new", "model", "compact", "resume", "continue", "help", "config",
+    "settings", "cost", "usage", "status", "login", "logout", "init", "memory", "permissions",
+    "allowed-tools", "agents", "mcp", "hooks", "ide", "vim", "theme", "doctor", "bug", "feedback",
+    "release-notes", "add-dir", "terminal-setup", "upgrade", "context", "export", "rewind", "fast",
+    "effort", "plugin", "plugins", "statusline", "output-style", "privacy-settings", "todos", "tasks",
+    "bashes", "sandbox", "rename", "copy", "files", "keybindings", "extra-usage", "stickers", "migrate-installer",
+    "install-github-app", "install-slack-app", "remote-env", "output-style:new",
+})
 
 
 # Failure markers in test/build output. Claude Code only sets tool_result.is_error when the shell exits
@@ -240,9 +251,9 @@ def _initiator(turn: Turn | None, kind: str, intent: str | None) -> tuple[str, s
     if turn is not None and turn.prompt_kind == "command":
         return "default", "2:command"
     if turn is not None and kind == "bash" and intent in ("test", "build"):
-        m = RULE3.search(turn.prompt_text or "")
-        if m:
-            return "human", "3:prompt:" + clip(m.group(0), 30)
+        span = classify.human_check_request(turn.prompt_text)
+        if span:
+            return "human", "3:prompt:" + clip(span, 60)
     return "agent", "5"
 
 
@@ -259,6 +270,7 @@ class _Parser:
         self.reqs: dict[str, dict] = {}
         self.tooling_seen: set[tuple] = set()   # (turn_idx, category, name)
         self.cmd_event: dict[int, Event] = {}   # turn_idx -> its command event
+        self.sess_cwd: str | None = None
 
     # ---- tooling events (skills / commands / mcp / plugins) ----
     def _tooling(self, t, tidx, category: str, name: str, initiator: str, rule: str,
@@ -276,9 +288,21 @@ class _Parser:
             self._tooling(t, tidx, "plugin", name.split(":", 1)[0], initiator, rule, tool_use_id, once=True)
         return ev
 
+    def _promote_command(self, tidx: int, t) -> None:
+        """The turn's slash command turned out to be a skill: one human skill use, not command + skill."""
+        ev = self.cmd_event.pop(tidx)
+        ev.data["category"] = "skill"
+        self.tooling_seen.add((tidx, "skill", ev.data["name"]))
+        if ":" in ev.data["name"]:
+            self._tooling(t or parse_ts(ev.at), tidx, "plugin", ev.data["name"].split(":", 1)[0],
+                          "human", "claude:command-name", once=True)
+
     def _assistant_tooling(self, e: dict, t, tidx) -> None:
         sk = e.get("attributionSkill")
         if isinstance(sk, str) and sk:
+            ev = self.cmd_event.get(tidx) if tidx is not None else None
+            if ev is not None and ev.data["name"].split(":")[-1] == sk.split(":")[-1]:
+                self._promote_command(tidx, t)   # attribution of the command this turn started
             self._tooling(t, tidx, "skill", sk, "agent", "claude:attributionSkill", once=True)
         pl = e.get("attributionPlugin")
         if isinstance(pl, str) and pl:
@@ -354,6 +378,8 @@ class _Parser:
                 paths = _safe(classify.bash_edit_paths, inp.get("command") or "") or []
                 cwd = e.get("cwd")
                 paths = [os.path.join(cwd, p) if cwd and not os.path.isabs(p) else p for p in paths]
+                # `cp x .` targets and agent scratch space (/tmp, */scratchpad/*) are not code edits
+                paths = [p for p in paths if not classify.noise_edit_path(p, self.sess_cwd)]
                 if paths:
                     self.edits[tid] = [FileEdit(tid, p, _safe(classify.manifest_dir, p)) for p in paths]
 
@@ -412,6 +438,7 @@ class _Parser:
         all_ts: list[datetime] = []
         cur: _T | None = None
         last_act_kind = None  # "tool_use" | "other"
+        builtin_event: dict[int, Event] = {}
 
         for e in ents:
             u = e.get("uuid")
@@ -430,6 +457,7 @@ class _Parser:
                 all_ts.append(t)
             if ty in ("user", "assistant", "system", "attachment"):
                 sess.cwd = sess.cwd or e.get("cwd")
+                self.sess_cwd = sess.cwd
                 sess.branch = sess.branch or e.get("gitBranch")
             if e.get("isSidechain"):
                 continue
@@ -487,19 +515,25 @@ class _Parser:
                     b.turns.append(turn)
                     last_act_kind = None
                     m = CMD_NAME.search(turn.prompt_text or "") if kind == "command" else None
-                    if m:
+                    if m and m.group(1).lower() in BUILTIN_COMMANDS:
+                        ev = Event("command_builtin", iso(t), turn.idx, {"name": m.group(1)})
+                        b.events.append(ev)
+                        builtin_event[turn.idx] = ev
+                    elif m:
                         ev = self._tooling(t, turn.idx, "command", m.group(1), "human", "claude:command-name")
                         if ev is not None:
                             self.cmd_event[turn.idx] = ev
                     continue
-                if e.get("isMeta") and cur is not None and cur.turn.idx in self.cmd_event \
-                        and (_text(e) or "").lstrip().startswith(SKILL_BASE):
-                    ev = self.cmd_event.pop(cur.turn.idx)   # the slash command expanded a skill
-                    ev.data["category"] = "skill"
-                    self.tooling_seen.add((cur.turn.idx, "skill", ev.data["name"]))
-                    if ":" in ev.data["name"]:
-                        self._tooling(t or parse_ts(ev.at), cur.turn.idx, "plugin", ev.data["name"].split(":", 1)[0],
-                                      "human", "claude:command-name", once=True)
+                if e.get("isMeta") and cur is not None and (_text(e) or "").lstrip().startswith(SKILL_BASE):
+                    if cur.turn.idx in builtin_event:   # a skill shadowing a built-in name: it is tooling
+                        bev = builtin_event.pop(cur.turn.idx)
+                        b.events.remove(bev)
+                        ev = self._tooling(parse_ts(bev.at), cur.turn.idx, "command", bev.data["name"], "human",
+                                           "claude:command-name")
+                        if ev is not None:
+                            self.cmd_event[cur.turn.idx] = ev
+                    if cur.turn.idx in self.cmd_event:
+                        self._promote_command(cur.turn.idx, t)   # the slash command expanded a skill
                 if not e.get("isMeta") and not _blocks(e, "tool_result") and _text(e):
                     pending = None  # dequeued item was a task-notification / agent message
                 owners = self._tool_results(e, t)
@@ -544,7 +578,9 @@ class _Parser:
         self._hooks()
         self._emit()
         sess.forked_from = forked_from
-        sess.repo = sess.cwd
+        # worktrees group under their main repo; branch from git only when the transcript has none
+        sess.repo, git_branch = classify.repo_root(sess.cwd)
+        sess.branch = sess.branch or git_branch
         if all_ts:
             sess.started_at, sess.ended_at = iso(min(all_ts)), iso(max(all_ts))
         sess.ended_by = b.turns[-1].end_source
@@ -617,6 +653,12 @@ class _Parser:
             if tt.interrupt_at is not None:
                 turn.agent_finished_at, turn.end_source = iso(tt.interrupt_at), "interrupt"
                 continue
+            if self._abandoned(i):
+                # Esc before the first agent output writes no marker: Claude puts the prompt back in the
+                # input box and the human resubmits (often edited). Zero agent time, interrupted.
+                turn.interrupted = True
+                turn.agent_finished_at, turn.end_source = iso(tt.at), "interrupt"
+                continue
             # Stop hooks matched by prompt_id (exact) else by time window; a Stop long after the
             # turn's last agent entry belongs to a detached rerun and is ignored
             stops = [at for h, at, k in self.hook_turns if k == i and h.get("event") == "Stop"
@@ -643,6 +685,18 @@ class _Parser:
             if ext > end:                   # ... but never past the next prompt
                 end = ext if nxt is None else max(end, min(ext, nxt))
             turn.agent_finished_at, turn.end_source = iso(max(end, tt.at)), src
+
+    def _abandoned(self, i: int) -> bool:
+        """Prompt with no agent output at all, followed by another prompt within ABANDON."""
+        tt = self.ts_list[i]
+        if i + 1 >= len(self.ts_list) or tt.turn.prompt_kind not in ("prompt", "queued"):
+            return False
+        nx = self.ts_list[i + 1]
+        if nx.turn.prompt_kind not in ("prompt", "queued") or nx.at - tt.at > ABANDON:
+            return False
+        if tt.first_asst is not None or tt.last_act is not None or tt.td or tt.side_ts:
+            return False
+        return not any(tc.turn_idx == i for tc in self.tools.values())
 
     # ---- hook events ----
     def _match_hooks(self) -> None:
@@ -671,6 +725,9 @@ class _Parser:
             self.b.events.append(Event("hook", iso(at), tidx, data))
             if h.get("event") == "Stop" and git is not None:
                 self.b.events.append(Event("git_snapshot", iso(at), tidx, {"git": git}))
+            elif h.get("event") == "SessionStart" and git is not None:
+                # working-tree state before the agent did anything: hand_edits diffs against it
+                self.b.events.append(Event("git_snapshot", iso(at), tidx, {"git": git, "baseline": True}))
 
     # ---- api calls / tool calls / edits into the bundle ----
     def _emit(self) -> None:

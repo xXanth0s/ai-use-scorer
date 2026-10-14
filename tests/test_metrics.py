@@ -399,3 +399,81 @@ def test_edit_then_failing_test_in_one_call(conn, tmp_path):
 def test_test_with_output_redirect_is_not_an_edit_batch(conn, tmp_path):
     write(conn, _self_verify(tmp_path, "pytest -q > out.log"))
     assert metrics.verification_batches(conn, DAY) == []
+
+
+# --- herdr lab regressions ------------------------------------------------------------------------
+
+def test_command_only_and_abandoned_turns_make_no_gaps(conn):
+    turns = [turn(0, 0, 10),
+             turn(1, 11, 11, end_source="interrupt", interrupted=True),           # Esc before any output
+             turn(2, 24, 40, agent_started_at=ts(25)),                            # resubmitted
+             turn(3, 100, 100, text="<command-name>/exit</command-name>", prompt_kind="command")]
+    turns[0].agent_started_at = ts(1)
+    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=turns),
+          Bundle(Session("s2", "claude", cwd="/q"), turns=[turn(0, 0, 200, agent_started_at=ts(1))]))
+    g = metrics.gaps(conn, DAY)
+    ids = {r[0]: r[1] for r in conn.execute("SELECT idx, id FROM turn WHERE session_id='s1'")}
+    assert [(x.prev_turn_id, x.turn_id) for x in g] == [(ids[0], ids[1])]   # real -> abandoned only
+    assert g[0].gap_s == 1
+    assert [b["turn_id"] for b in metrics.blocked(conn, DAY)] == [ids[1]]   # no /exit or resubmit artifacts
+    rid = run(conn)
+    assert val(conn, rid, "interrupts") == 1
+
+
+def test_scratchpad_edits_not_a_v_batch(conn):
+    sp = "/private/tmp/claude-501/-r/abc/scratchpad"
+    calls = [ToolCall(0, "e1", "Bash", kind="bash", bash_intent="edit",
+                      args_summary=f"cd {sp} && cp /r/todo.py . && rm -f todo.json", started_at=ts(1), has_result=True),
+             ToolCall(0, "e2", "Edit", kind="edit", args_summary="/r/todo.py", started_at=ts(2), has_result=True)]
+    edits = [FileEdit("e1", sp + "/."), FileEdit("e1", sp + "/todo.json"), FileEdit("e2", "/r/todo.py")]
+    write(conn, Bundle(Session("s1", "claude", cwd="/r", repo="/r"), turns=[turn(0, 0, 10)], tool_calls=calls,
+                       file_edits=edits))
+    bs = metrics.verification_batches(conn, DAY)
+    assert len(bs) == 1 and bs[0].paths == ["/r/todo.py"]
+    e2 = conn.execute("SELECT id FROM tool_call WHERE tool_use_id='e2'").fetchone()[0]
+    assert bs[0].edit_call_ids == [e2]
+
+
+def test_scratchpad_only_turn_has_no_batch(conn):
+    calls = [ToolCall(0, "e1", "Bash", kind="bash", bash_intent="edit", args_summary="rm -rf /tmp/x/build",
+                      started_at=ts(1), has_result=True)]
+    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=[turn(0, 0, 10)], tool_calls=calls,
+                       file_edits=[FileEdit("e1", "/tmp/x/build")]))
+    assert metrics.verification_batches(conn, DAY) == []
+
+
+def _snap(sec, idx, changed, untracked=(), baseline=False):
+    d = {"git": {"changed_paths": list(changed), "untracked_paths": list(untracked)}}
+    if baseline:
+        d["baseline"] = True
+    return Event("git_snapshot", ts(sec), idx, d)
+
+
+def test_hand_edit_new_untracked_file(conn):
+    """A hand edit that creates a file shows up as untracked in the next Stop snapshot."""
+    events = [_snap(-5, None, ["junk.log"], ["junk.log"], baseline=True),
+              _snap(50, 0, ["junk.log"], ["junk.log"]),
+              _snap(150, 1, ["junk.log", "notes.md", "newdir/"], ["junk.log", "notes.md", "newdir/"])]
+    calls = [ToolCall(1, "e1", "Write", kind="edit", args_summary="/r/newdir/a.py", started_at=ts(110),
+                      has_result=True)]
+    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=[turn(0, 0, 50), turn(1, 100, 150)], events=events,
+                       tool_calls=calls, file_edits=[FileEdit("e1", "/r/newdir/a.py")]))
+    h = metrics.hand_edits(conn, DAY)
+    assert h["own"] == 1 and [e["note"] for e in h["evidence"]] == ["own: notes.md"]   # newdir/ = agent's
+
+
+def test_untracked_in_first_snapshot_without_baseline_not_counted(conn):
+    events = [_snap(50, 0, ["a.py", "old.log"], ["old.log"])]
+    write(conn, Bundle(Session("s1", "claude", cwd="/r"), turns=[turn(0, 0, 50)], events=events))
+    h = metrics.hand_edits(conn, DAY)
+    assert [e["note"] for e in h["evidence"]] == ["own: a.py"]
+
+
+def test_queued_prompts_metric(conn):
+    turns = [turn(0, 0, 60), turn(1, 60, 120, prompt_kind="queued", enqueued_at=ts(30)), turn(2, 200, 260)]
+    events = [Event("queue_enqueue", ts(210), 2, {"reason": "absorbed_mid_turn"}),
+              Event("queue_enqueue", ts(220), 2, {"reason": "removed"})]
+    write(conn, Bundle(Session("s1", "claude"), turns=turns, events=events))
+    rid = run(conn)
+    assert val(conn, rid, "queued_prompts") == 2
+    assert val(conn, rid, "queued_prompts", scope_type="all", scope_id="all") == 2

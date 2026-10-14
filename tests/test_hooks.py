@@ -103,8 +103,28 @@ def test_stop_in_git_repo_has_snapshot(scorer_home, tmp_path):
     g = ln["git"]
     assert len(g["head"]) == 40 and g["branch"] == "main"
     assert g["files_changed"] == 1 and g["insertions"] == 2 and g["deletions"] == 1
-    assert g["untracked_count"] == 1 and g["changed_paths"] == ["a.py"]
+    # untracked files count as changed too: a hand edit can create a new file
+    assert g["untracked_count"] == 1 and g["changed_paths"] == ["a.py", "new.txt"]
+    assert g["untracked_paths"] == ["new.txt"]
     assert len(g["diff_stat_sha1"]) == 40 and len(g["untracked_sha1"]) == 40
+
+
+def test_session_start_takes_baseline_snapshot(scorer_home, tmp_path):
+    repo = git_repo(tmp_path / "repo")
+    (repo / "old.txt").write_text("pre-existing\n")
+    payload = {"session_id": "s", "hook_event_name": "SessionStart", "cwd": str(repo)}
+    r, _ = run_event(scorer_home, json.dumps(payload).encode(), event="SessionStart")
+    assert r.returncode == 0 and r.stdout == b""
+    [ln] = lines(scorer_home)
+    assert ln["git"]["changed_paths"] == ["old.txt"]
+
+
+def test_untracked_paths_capped(scorer_home, tmp_path):
+    repo = git_repo(tmp_path / "repo")
+    for i in range(hookio.MAX_PATHS + 20):
+        (repo / f"n{i:03d}.txt").write_text("x\n")
+    g = hookio._git_snapshot(str(repo), budget=5.0)
+    assert len(g["changed_paths"]) == hookio.MAX_PATHS and len(g["untracked_paths"]) == hookio.MAX_PATHS
 
 
 def test_stop_non_git_cwd_no_snapshot(scorer_home, tmp_path):

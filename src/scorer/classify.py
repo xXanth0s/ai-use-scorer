@@ -10,6 +10,9 @@
   segment_intents(cmd) -> list[str]       # per-segment intent, in order
   edit_precedes_check(cmd) -> bool        # an edit segment before the first test|build segment
   summarize_command(cmd, cap=500) -> str  # args_summary that keeps the deciding segment visible
+  human_check_request(text) -> str | None # matched span when a prompt explicitly asks to RUN checks
+  is_scratch_path(p) / v_edit_path(p, roots) / noise_edit_path(p, cwd)  # scratch space / V edit-path filters
+  repo_root(cwd) -> (repo, branch)        # main worktree toplevel via git (cached), else (cwd, None)
 
 Splitting: commands are split on `&&`, `||`, `;`, `|`, `&` and newlines with
 shlex (quotes respected); unbalanced quotes fall back to a regex split.
@@ -23,6 +26,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -631,3 +635,106 @@ def _is_relevant(test_cmd: str, test_cwd: str | None, edited_paths: tuple) -> st
         if _within(m, eff):
             best = "relevant-broad"
     return best
+
+
+# --- human verification request (initiator rule 3) ---------------------------------------------
+# Only an explicit request to RUN checks credits the check to the human: a run verb next to a check
+# noun, a "make sure it passes", or German equivalents. "write tests" / "don't run anything" do not.
+_CHECK_NOUN = (r"(?:test[- ]?suites?|testsuite|tests?|specs?|pytest|vitest|jest|mocha|unit[- ]tests?|e2e|"
+               r"builds?|lint(?:er|ing)?|typecheck(?:s|ing)?|type[- ]check(?:s|ing)?|tsc|mypy|checks|ci)")
+# up to 4 words between verb and noun ("run the full test suite"), but not across "and write"/"then add"
+_GAP = (r"(?:[\s,:]+(?!(?:and|then|or|write|add|create|und|dann|oder|schreib\w*)\b)[\w./:@'`-]+){0,4}?"
+        r"[\s,:]+")
+_CHECK_RX = re.compile("|".join([
+    rf"\b(?:re-?)?run(?:s|ning)?\b{_GAP}`?{_CHECK_NOUN}\b",
+    rf"\b(?:execute|exec|kick off|launch|trigger)\b{_GAP}`?{_CHECK_NOUN}\b",
+    rf"\b(?:verify|check|confirm|ensure)\b{_GAP}(?:the |all )?{_CHECK_NOUN}\b",
+    r"\b(?:make sure|ensure|verify|check|confirm)\b(?:\s+(?:that|it|they|all|the|everything|tests?|build|"
+    r"it's|still))*\s+(?:pass(?:es|ing)?|(?:is |are |stays? )?green|builds?|compiles?|works?)\b",
+    r"\b(?:lint|typecheck|type-check)\s+(?:the|it|this|everything|all)\b",
+    # German: "teste das", "führ die tests aus", "lass die tests laufen", "tests ausführen"
+    r"\b(?:teste|testen|testet)\b",
+    rf"\bführ\w*\b{_GAP}{_CHECK_NOUN}\b(?:\s+\w+){{0,2}}?\s+aus\b",
+    rf"\blass\w*\b{_GAP}{_CHECK_NOUN}\b(?:\s+\w+){{0,2}}?\s+laufen\b",
+    rf"\b{_CHECK_NOUN}\s+(?:aus)?(?:führen|laufen lassen|starten)\b",
+    r"\bprüf\w*\b(?:\s+\w+){0,3}?\s+ob\b[^.\n]*\b(?:durchl[aä]uf\w*|grün|passt|funktioniert)\b",
+]), re.I)
+_NEG_BEFORE = re.compile(r"\b(?:don'?t|do not|dont|doesn'?t|does not|no need to|without|never|not|skip|avoid|"
+                         r"nicht|ohne|kein\w*|nie)\b(?:\W+\w+){0,2}\W*$", re.I)
+_NEG_INSIDE = re.compile(r"\b(?:nicht|not|never|nie)\b", re.I)
+_CLAUSE = re.compile(r"[.!?;\n]")
+
+
+def human_check_request(text: str | None) -> str | None:
+    """Span of the first non-negated explicit request to run tests/build/lint/typecheck, else None."""
+    if not text:
+        return None
+    for m in _CHECK_RX.finditer(text):
+        span = m.group(0)
+        start = m.start()
+        clause = _CLAUSE.split(text[max(0, start - 60):start])[-1]
+        if _NEG_BEFORE.search(clause) or _NEG_INSIDE.search(span):
+            continue
+        return span
+    return None
+
+
+# --- agent scratch paths / V edit paths -------------------------------------------------------
+_SCRATCH_PREFIXES = ("/tmp/", "/private/tmp/", "/private/var/folders/", "/var/folders/",
+                     os.path.expanduser("~/.claude/"))
+
+
+def is_scratch_path(p: str | None) -> bool:
+    """Agent scratch space: /tmp, /private/tmp, /private/var/folders, ~/.claude, any */scratchpad/*."""
+    if not p:
+        return False
+    n = os.path.normpath(os.path.expanduser(p))
+    return "/scratchpad/" in n + "/" or any((n + "/").startswith(x) for x in _SCRATCH_PREFIXES)
+
+
+def v_edit_path(p: str | None, roots: tuple | list = ()) -> bool:
+    """Does an edited path count for V? Not "."/"..", not a root dir itself, and inside the session's
+    cwd/repo tree when roots are known; with no roots known, anything but agent scratch space."""
+    if not p or os.path.basename(p.rstrip("/") or "/") in (".", ".."):
+        return False
+    n = os.path.normpath(os.path.expanduser(p))
+    rs = [os.path.normpath(r) for r in roots if r]
+    if not os.path.isabs(n) or not rs:
+        return not is_scratch_path(n)
+    if any(n == r for r in rs):
+        return False   # the directory itself (`cp x .`)
+    return any(_within(n, r) for r in rs)
+
+
+def noise_edit_path(p: str | None, cwd: str | None = None) -> bool:
+    """Parser-side filter for shell-derived edit paths: "." / ".." targets and scratch space outside cwd."""
+    if not p or os.path.basename(p.rstrip("/") or "/") in (".", ".."):
+        return True
+    return is_scratch_path(p) and not (cwd and _within(os.path.normpath(p), os.path.normpath(cwd)))
+
+
+# --- repo of a cwd ------------------------------------------------------------------------------
+@lru_cache(maxsize=4096)
+def repo_root(cwd: str | None) -> tuple[str | None, str | None]:
+    """(main worktree toplevel, current branch) for a cwd; (cwd, None) when the dir is gone or not a repo.
+    Worktrees resolve to their main repo via --git-common-dir. One git call, 1 s timeout, cached per cwd."""
+    if not cwd or not os.path.isdir(cwd):
+        return cwd, None
+    try:
+        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir",
+                            "--show-toplevel", "--abbrev-ref", "HEAD"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           timeout=1, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"})
+    except Exception:
+        return cwd, None
+    lines = r.stdout.decode("utf-8", errors="replace").splitlines()
+    if not lines:
+        return cwd, None
+    common = lines[0].strip()
+    top = lines[1].strip() if len(lines) > 1 else ""
+    br = lines[2].strip() if len(lines) > 2 and r.returncode == 0 else ""
+    if os.path.basename(common.rstrip("/")) == ".git":
+        repo = os.path.dirname(common.rstrip("/"))
+    else:
+        repo = top or cwd     # submodule (.git/modules/x) or bare layout: own toplevel
+    return repo, (br if br and br != "HEAD" else None)

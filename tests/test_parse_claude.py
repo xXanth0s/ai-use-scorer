@@ -324,3 +324,95 @@ def test_bash_edit_paths_recorded_whatever_the_intent(tmp_path):
     assert len(cmd) > 500 and "pytest -q tests/test_a.py" in tc.args_summary and "x = 1" not in tc.args_summary
     b = parse(str(tmp_path / "00000000-0000-4000-8000-0000000000b1.jsonl"))
     assert [e.path for e in b.file_edits] == ["/tmp/r/a.py"]
+
+
+# --- herdr lab regressions ------------------------------------------------------------------------
+
+def test_abandoned_prompt_fixture_is_an_interrupt():
+    """Esc before the first assistant output writes no marker: the resubmitted prompt follows."""
+    b = fx("abandoned_prompt.jsonl")
+    t = b.turns
+    assert kinds(b) == ["prompt", "prompt", "prompt", "command", "command"]
+    assert t[1].interrupted and t[1].end_source == "interrupt" and t[1].agent_started_at is None
+    assert t[1].agent_finished_at == t[1].prompt_at          # zero agent time thrown away
+    assert not t[0].interrupted and not t[2].interrupted and t[2].end_source == "turn_duration"
+    # the trailing /exit has no follow-up prompt and is a command: never an abandoned prompt
+    assert not t[4].interrupted
+
+
+def test_abandoned_needs_follow_up_within_window(tmp_path):
+    rows = [json.loads(line) for line in open(os.path.join(FIX, "abandoned_prompt.jsonl"))]
+    for r in rows:
+        if r.get("uuid") in ("u3", "a3", "u4", "a4", "s2"):
+            r["timestamp"] = r["timestamp"].replace("T21:03:", "T21:23:")   # 20 min later
+    p = tmp_path / "late.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    b = parse(str(p))
+    assert not b.turns[1].interrupted and b.turns[1].end_source == "last_entry"
+
+
+def test_project_command_counted_once_and_builtin_not_tooling():
+    b = fx("abandoned_prompt.jsonl")
+    tooling = [(e.data["category"], e.data["name"], e.data["initiator"]) for e in b.events if e.kind == "tooling"]
+    assert tooling == [("skill", "runtests", "human")]       # command-name + attributionSkill = one use
+    assert [e.data["name"] for e in b.events if e.kind == "command_builtin"] == ["exit"]
+    bash = next(c for c in b.tool_calls if c.name == "Bash")
+    assert (bash.initiator, bash.initiator_rule) == ("default", "2:command")
+
+
+def test_dont_run_prompt_does_not_credit_human():
+    b = fx("abandoned_prompt.jsonl")
+    edit = next(c for c in b.tool_calls if c.name == "Edit")
+    assert edit.initiator == "agent"
+    rows = [json.loads(line) for line in open(os.path.join(GOLD, "g9_tooling.jsonl"))]
+    assert any("run the tests" in json.dumps(r) for r in rows)   # g9 keeps the positive case
+
+
+def test_scratchpad_bash_edits_dropped(tmp_path):
+    cmd = ("cd /private/tmp/claude-501/-x/abc/scratchpad && cp /tmp/r/todo.py . && rm -f todo.json "
+           "&& touch /tmp/r/real.py")
+    _bash_session(tmp_path, cmd, "")
+    b = parse(str(tmp_path / "00000000-0000-4000-8000-0000000000b1.jsonl"))
+    assert [e.path for e in b.file_edits] == ["/tmp/r/real.py"]   # session cwd /tmp/r: inside, kept
+
+
+def _git(*a, cwd):
+    subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True,
+                   env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                        "GIT_COMMITTER_EMAIL": "t@t"})
+
+
+def test_worktree_session_groups_with_main_repo(tmp_path):
+    from scorer import classify
+    main = tmp_path / "main"
+    main.mkdir()
+    _git("init", "-q", "-b", "main", cwd=main)
+    (main / "a.txt").write_text("a\n")
+    _git("add", ".", cwd=main)
+    _git("commit", "-qm", "init", cwd=main)
+    wt = tmp_path / "wt"
+    _git("worktree", "add", "-q", "-b", "feat/x", str(wt), cwd=main)
+    classify.repo_root.cache_clear()
+    assert classify.repo_root(str(wt)) == (str(main.resolve()), "feat/x")
+    assert classify.repo_root(str(main / ".")) [0] == str(main.resolve())
+    assert classify.repo_root(str(tmp_path / "gone")) == (str(tmp_path / "gone"), None)   # dir no longer exists
+    assert classify.repo_root(str(tmp_path)) == (str(tmp_path), None)                      # not a repo
+    rows = [json.loads(line) for line in open(os.path.join(FIX, "abandoned_prompt.jsonl"))]
+    for r in rows:
+        r["cwd"] = str(wt)
+        r.pop("gitBranch", None)
+    p = tmp_path / "wt.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    b = parse(str(p))
+    assert b.session.cwd == str(wt) and b.session.repo == str(main.resolve())
+    assert b.session.branch == "feat/x"                      # from git: the transcript has none
+
+
+def test_session_start_snapshot_is_a_baseline():
+    path = os.path.join(GOLD, "g1_gaps.jsonl")
+    sid = parse(path).session.id
+    hooks = [{"at": "2026-10-01T07:59:59+00:00", "agent": "claude", "event": "SessionStart",
+              "payload": {"session_id": sid}, "git": {"changed_paths": ["old.txt"]}}]
+    b = parse(path, hooks)
+    snaps = [e for e in b.events if e.kind == "git_snapshot"]
+    assert len(snaps) == 1 and snaps[0].data["baseline"] is True

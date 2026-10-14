@@ -212,3 +212,55 @@ def test_summarize_command():
     s2 = classify.summarize_command(huge, 500)
     assert len(s2) <= 500 and s2.endswith("pytest -q tests/test_x.py") and " … " in s2
     assert classify.bash_intent(s2) == "test"
+
+
+# --- rule 3: explicit request to RUN checks (herdr lab) ----------------------------------------------
+
+@pytest.mark.parametrize("text,span", [
+    ("Add tests for add, list and done in tests/test_todo.py and run pytest to verify they pass.", "run pytest"),
+    ("Create roman.js with node:test tests in roman.test.js. Run npm test at the end.", "Run npm test"),
+    ("Also add fromRoman(s) with tests, and run npm test again.", "run npm test"),
+    ("run the tests please", "run the tests"),
+    ("please run the full test suite", "run the full test suite"),
+    ("execute the build and fix what breaks", "execute the build"),
+    ("make sure it passes", "make sure it passes"),
+    ("verify the build", "verify the build"),
+    ("führ die tests aus", "führ die tests aus"),
+    ("teste das bitte", "teste"),
+    ("lass die Tests laufen", "lass die Tests laufen"),
+    ("Write tests in tests/test_histogram.py with 4-5 cases.", None),
+    ("write tests", None),
+    ("Add a --format json option. Don't run anything.", None),
+    ("don't run the tests", None),
+    ("do not run pytest yet", None),
+    ("No need to run the build", None),
+    ("refactor it without running the tests", None),
+    ("nicht testen", None),
+    ("führ die tests nicht aus", None),
+    ("Run the CLI and write tests", None),
+    ("the test run was slow, speed it up", None),
+    ("Don't run anything. Then run pytest.", "run pytest"),     # negation is clause-scoped
+])
+def test_human_check_request(text, span):
+    assert classify.human_check_request(text) == span
+
+
+@pytest.mark.parametrize("path,roots,ok", [
+    ("/r/a.py", ("/r",), True),
+    ("/r/.", ("/r",), False),
+    ("/r", ("/r",), False),
+    ("/private/tmp/claude-501/x/scratchpad/todo.json", ("/r",), False),
+    ("/elsewhere/b.py", ("/r",), False),
+    ("/main/sub/c.py", ("/wt", "/main"), True),
+    ("/tmp/x.py", (), False),
+    ("/x/scratchpad/y.py", (), False),
+    ("rel/a.py", ("/r",), True),
+])
+def test_v_edit_path(path, roots, ok):
+    assert classify.v_edit_path(path, roots) is ok
+
+
+def test_noise_edit_path_respects_session_cwd():
+    assert classify.noise_edit_path("/tmp/r/.", "/tmp/r")
+    assert not classify.noise_edit_path("/tmp/r/a.py", "/tmp/r")        # a session that lives in /tmp
+    assert classify.noise_edit_path("/private/tmp/claude-501/s/scratchpad/a.py", "/Users/x/repo")
