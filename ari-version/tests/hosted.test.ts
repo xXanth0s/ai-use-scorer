@@ -1,11 +1,39 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import {hostedApi as api,hostedRequest as proxy,type HostedAuth} from '../lib/hosted';
 const auth:HostedAuth={identity:async()=>({userId:'clerk-synthetic'}),seal:(_userId,value)=>value,unseal:(_userId,value)=>value};
 const hostedApi=(request:Request)=>api(request,auth);
 const hostedRequest=(request:Request,path:string,init:RequestInit={})=>proxy(request,path,init,auth);
 const credential=`hdyai_${'a'.repeat(43)}`;
 function request(path:string,method='GET',headers:Record<string,string>={},body?:string){return new Request(`https://dashboard.example${path}`,{method,headers:{host:'dashboard.example',cookie:`hdyai_web=${credential}`,origin:'https://dashboard.example',...headers},body});}
+test('automatic setup uses verified Clerk IDs, signs server requests and hides provisioned credentials',async()=>{
+ const saved={HDYAI_HOSTED:process.env.HDYAI_HOSTED,WEB_PROVISIONING_KEY:process.env.WEB_PROVISIONING_KEY,HDYAI_ANALYSIS_URL:process.env.HDYAI_ANALYSIS_URL};
+ const oldFetch=globalThis.fetch;
+ const key='synthetic-web-provisioning-key-for-tests-only';
+ Object.assign(process.env,{HDYAI_HOSTED:'1',WEB_PROVISIONING_KEY:key,HDYAI_ANALYSIS_URL:'https://analysis.example'});
+ const verified:HostedAuth={...auth,identity:async()=>({userId:'user_Synthetic',sessionId:'sess_Synthetic'}),unseal:()=>null,seal:(id,value)=>{assert.equal(id,'user_Synthetic');assert.equal(value,credential);return 'encrypted-test-value';}};
+ let calls=0;
+ globalThis.fetch=async(input,init)=>{
+  calls++;assert.equal(String(input),'https://analysis.example/api/web/provision');
+  const headers=init?.headers as Record<string,string>,payload=String(init?.body);
+  assert.deepEqual(JSON.parse(payload),{userId:'user_Synthetic',sessionId:'sess_Synthetic'});
+  assert.equal(headers['x-hdyai-signature'],createHmac('sha256',key).update(`${headers['x-hdyai-timestamp']}.${payload}`).digest('hex'));
+  assert.equal(headers.authorization,undefined);assert.equal(init?.redirect,'error');
+  return Response.json({deviceToken:credential,userId:'clerk:user_Synthetic',dailyLimit:2,expiresAt:'2026-11-14T00:00:00Z'});
+ };
+ try{
+  const response=await api(request('/api/setup','POST',{'content-type':'application/json'},JSON.stringify({userId:'user_Attacker',dailyLimit:20})),verified);
+  assert.equal(response?.status,200);assert.match(response!.headers.get('set-cookie')||'',/HttpOnly/);
+  const value=await response!.json();assert.equal(value.dailyLimit,2);assert.doesNotMatch(JSON.stringify(value),/hdyai_|invite_|encrypted-test/);assert.equal(calls,1);
+  const before=calls;
+  assert.equal((await api(request('/api/setup','POST',{'sec-fetch-site':'cross-site'}),verified))?.status,403);
+  assert.equal((await api(request('/api/setup','POST'),{...verified,identity:async()=>null}))?.status,401);
+  assert.equal((await api(request('/api/setup','POST'),{...verified,identity:async()=>({userId:'user_Synthetic'})}))?.status,401);
+  delete process.env.WEB_PROVISIONING_KEY;
+  assert.equal((await api(request('/api/setup','POST'),verified))?.status,503);assert.equal(calls,before);
+ }finally{globalThis.fetch=oldFetch;for(const [name,value] of Object.entries(saved)){if(value===undefined)delete process.env[name];else process.env[name]=value;}}
+});
 test('hosted facade protects credentials, CSRF, errors and fixed proxy paths',async()=>{
  const oldFetch=globalThis.fetch,oldHosted=process.env.HDYAI_HOSTED,oldUrl=process.env.HDYAI_ANALYSIS_URL;
  process.env.HDYAI_HOSTED='1';process.env.HDYAI_ANALYSIS_URL='https://analysis.example';

@@ -1,8 +1,9 @@
 import { defaultAnalysisService } from './onboarding';
 import type { ReportContent } from './types';
 import { webIdentity, sealWebCredential, unsealWebCredential } from './web-auth';
+import { createHmac } from 'node:crypto';
 
-export type HostedAuth = {identity:()=>Promise<{userId:string}|null>;seal:(userId:string,credential:string)=>string;unseal:(userId:string,value:string)=>string|null};
+export type HostedAuth = {identity:()=>Promise<{userId:string;sessionId?:string}|null>;seal:(userId:string,credential:string)=>string;unseal:(userId:string,value:string)=>string|null};
 const webAuth:HostedAuth={identity:webIdentity,seal:sealWebCredential,unseal:unsealWebCredential};
 async function identity(auth:HostedAuth){try{return await auth.identity();}catch{throw new HostedError(503,'Sign-in is temporarily unavailable.');}}
 
@@ -29,7 +30,7 @@ function sameOrigin(request:Request){
   if(parsed.origin!==expected.origin||origin!==parsed.origin)denied();
  }else if(!['GET','HEAD'].includes(request.method)&&site!=='same-origin')denied();
 }
-const upstreamMessage=(status:number)=>status===401?'Connect this browser with your invitation first.':status===403?'Access has expired or been revoked. Connect with a new invitation.':status===404?'Report not found.':status===429?'The account limit has been reached. Try again later.':status===400?'The hosted service could not accept this request.':'The hosted service is temporarily unavailable.';
+const upstreamMessage=(status:number)=>status===401?'Open setup to reconnect your account.':status===403?'Account access has been disabled or this connection was revoked. Contact the platform administrator.':status===404?'Report not found.':status===429?'The account limit has been reached. Try again later.':status===400?'The hosted service could not accept this request.':'The hosted service is temporarily unavailable.';
 async function upstream(path:string,init:RequestInit={}){
  let r:Response;
  try{r=await fetch(`${service()}${path}`,{...init,cache:'no-store',redirect:'error',signal:AbortSignal.timeout(30000)});}catch{throw new HostedError(503,'The hosted service is temporarily unavailable.');}
@@ -44,7 +45,7 @@ export async function hostedRequest(request:Request,path:string,init:RequestInit
  if(!((method==='GET'&&(/^\/api\/(device|library)$/.test(path)||published))||(method==='DELETE'&&path==='/api/device')||(method==='POST'&&path==='/api/pairings')))throw new HostedError(400,'Unsupported hosted request.');
  const signedIn=await identity(auth);if(!signedIn)throw new HostedError(401,'Sign in to connect this browser.');
  const credential=auth.unseal(signedIn.userId,token(request))||'';
- if(!/^hdyai_[A-Za-z0-9_-]{43}$/.test(credential))throw new HostedError(401,'Connect this browser with your invitation first.');
+ if(!/^hdyai_[A-Za-z0-9_-]{43}$/.test(credential))throw new HostedError(401,'Open setup to connect your account.');
  return upstream(path,{...init,headers:{'content-type':'application/json',authorization:`Bearer ${credential}`}});
 }
 const json=(value:unknown,status=200,extra:Record<string,string>={})=>Response.json(value,{status,headers:{'cache-control':'no-store','x-content-type-options':'nosniff',...extra}});
@@ -93,8 +94,24 @@ export async function hostedApi(request:Request,auth:HostedAuth=webAuth):Promise
    try{const d=await authenticatedRequest(request,'/api/device');return json({...authStatus,connected:true,userId:d.userId,url:service(),reportName:'',expiresAt:null});}catch(e){if(e instanceof HostedError&&[401,403].includes(e.status))return json({...authStatus,connected:false});throw e;}
   }
   if(path==='/api/setup'){
-   if(method==='POST')return json(await authenticatedRequest(request,'/api/pairings',{method:'POST',body:'{}'}));
-   try{const [d,library]=await Promise.all([authenticatedRequest(request,'/api/device'),authenticatedRequest(request,'/api/library')]);return json({...authStatus,hosted:true,connection:{connected:true,userId:d.userId},configured:!!library.collector,collector:library.collector,sessionCount:library.sessions.length,reportCount:library.reports.length});}catch(e){if(e instanceof HostedError&&[401,403].includes(e.status))return json({...authStatus,hosted:true,connection:{connected:false},configured:false,collector:null,sessionCount:0,reportCount:0});throw e;}
+   if(method==='POST'){
+    // Keep an existing invited account connected; new signups get their own restricted tenant.
+    if(auth.unseal(signedIn.userId,token(request))){
+     try{const d=await authenticatedRequest(request,'/api/device');return json({connected:true,userId:d.userId,dailyLimit:d.dailyLimit});}
+     catch(e){if(!(e instanceof HostedError)||e.status!==401)throw e;}
+    }
+    const key=process.env.WEB_PROVISIONING_KEY;
+    if(!key||key.length<32)throw new HostedError(503,'Account setup is temporarily unavailable.');
+    if(!/^user_[A-Za-z0-9_-]{1,180}$/.test(signedIn.userId)||!/^sess_[A-Za-z0-9_-]{1,180}$/.test(signedIn.sessionId||''))throw new HostedError(401,'Sign in again to finish account setup.');
+    // IDs come exclusively from the verified Clerk session, never the request body.
+    const payload=JSON.stringify({userId:signedIn.userId,sessionId:signedIn.sessionId});
+    const timestamp=String(Math.floor(Date.now()/1000));
+    const signature=createHmac('sha256',key).update(`${timestamp}.${payload}`).digest('hex');
+    const d=await upstream('/api/web/provision',{method:'POST',headers:{'content-type':'application/json','x-hdyai-timestamp':timestamp,'x-hdyai-signature':signature},body:payload});
+    if(!/^hdyai_[A-Za-z0-9_-]{43}$/.test(d.deviceToken)||d.userId!==`clerk:${signedIn.userId}`||!Number.isInteger(d.dailyLimit)||d.dailyLimit<1||d.dailyLimit>20)throw new HostedError(503,'Could not finish account setup.');
+    return json({...authStatus,connected:true,userId:d.userId,dailyLimit:d.dailyLimit,expiresAt:d.expiresAt},200,{'set-cookie':cookie(auth.seal(signedIn.userId,d.deviceToken),2592000)});
+   }
+   try{const [d,library]=await Promise.all([authenticatedRequest(request,'/api/device'),authenticatedRequest(request,'/api/library')]);return json({...authStatus,hosted:true,connection:{connected:true,userId:d.userId,dailyLimit:d.dailyLimit,usedToday:d.usedToday,collectorLimit:d.collectorLimit||3},configured:!!library.collector,collector:library.collector,sessionCount:library.sessions.length,reportCount:library.reports.length});}catch(e){if(e instanceof HostedError&&[401,403].includes(e.status))return json({...authStatus,hosted:true,connection:{connected:false},configured:false,collector:null,sessionCount:0,reportCount:0});throw e;}
   }
   if(['/api/settings','/api/entire','/api/collect'].includes(path)&&method==='POST')throw new HostedError(409,'The collector manages capture settings on your computer. Keep it running to receive new sessions.');
   if(path==='/api/settings')return json({entireRepos:[],nativeFallback:true});

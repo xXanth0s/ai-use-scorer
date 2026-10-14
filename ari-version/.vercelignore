@@ -16,3 +16,4 @@ services/analysis/.agents
 
 scripts/deployment-fixture.ts
 scripts/publish-approved-report.ts
+docs/onboarding
