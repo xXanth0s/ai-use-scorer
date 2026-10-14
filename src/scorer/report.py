@@ -537,7 +537,19 @@ def facts(conn, day: str, run_id: int | None = None, baseline_days: list[str] | 
         "scored": scored,
         "diagnostics": _diagnostics(m),
         "judge_doubt": _judge_doubt(m),
+        "action_items": _judge_call("action_items", conn, day, run_id=run_id, default=[]),
+        "strengths": _judge_call("strengths", conn, day, run_id=run_id, default=[]),
+        "attribution": _judge_call("attribution", conn, day, default=None),
     }
+
+
+def _judge_call(name: str, conn, day: str, default=None, **kw):
+    """judge.action_items / strengths / attribution; any failure -> default."""
+    try:
+        from . import judge
+        return getattr(judge, name)(conn, day, **kw)
+    except Exception:
+        return default
 
 
 # --- rendering ---------------------------------------------------------------------------------
@@ -653,6 +665,7 @@ def _render_eight(f: dict) -> list[str]:
             today = "judge pending"
         L.append(f"   | {s['label']} | {today} | {_fmt_scored(s['baseline'], unit)} | {s['trend']} |")
     L.append("")
+    L.extend(_attribution_lines(f.get("attribution")))
     L.append(f"8. **Diagnostics:** {_diag_line(f['diagnostics'])}. Judge unsure: {f['judge_doubt']}.")
     return L
 
@@ -727,4 +740,58 @@ def render(conn: sqlite3.Connection, *, day: str | None = "today", days: int | N
     if nar or multi:
         out += [f"## {focus}" + (" (latest day with data)" if multi and focus != end else ""), ""]
     out += _render_eight(f)
+    out += _render_items(f.get("strengths") or [], "What you did well",
+                         "none recorded today — the judge notes good moves once `scorer judge` has run.")
+    out += _render_actions(f.get("action_items") or [])
     return "\n".join(out).rstrip() + "\n"
+
+
+def _attribution_lines(a: dict | None) -> list[str]:
+    """Section 7 add-on: each scored metric's you/agent split on one line (judge.attribution)."""
+    if not a:
+        return []
+    c, v, t = a["corrections"], a["verification"], a["tooling"]
+    via = f" (incl. {v['asked_by_you']['via_config']} via CLAUDE.md/hooks)" if v["asked_by_you"].get("via_config") else ""
+    return [f"   - you vs agent: V asked by you {v['asked_by_you']['count']}{via} / agent initiative "
+            f"{v['agent_initiative']['count']} / none {v['none']['count']} · C you-preventable "
+            f"{c['user_preventable']['count']} / agent error {c['agent_error']['count']} / environment "
+            f"{c['environment']['count']} / unclear {c['unclear']['count']} · H, B_min: yours by definition · "
+            f"tooling you {t['you']['count']} / agent {t['agent']['count']} / default {t['default']['count']}", ""]
+
+
+def _render_items(items: list[dict], heading: str, empty: str) -> list[str]:
+    """A numbered "## <heading>" list. Plain numbered lines (no bold) so they never read as one of
+    the 8 report sections."""
+    L = ["", f"## {heading}", ""]
+    if not items:
+        return L + [empty]
+    for i, it in enumerate(items, 1):
+        src = "judge" if it.get("source") == "judge" else "metrics"
+        L.append(f"{i}. {clip(it.get('text'), 120)} — {it.get('category')}, {it.get('count', 0)}× ({src}) — "
+                 f"{_turns_ref(it.get('turn_ids') or [])}")
+        if it.get("example_quote"):
+            L.append(f"   - e.g. \"{clip(it['example_quote'], 80)}\"")
+    if any(it.get("uncalibrated") for it in items):
+        L += ["", "_Judge items are uncalibrated (no κ check yet)._"]
+    return L
+
+
+def _render_actions(items: list[dict]) -> list[str]:
+    """## Action items after the 8 lines. Plain numbered lines (no bold) so they never read as one
+    of the 8 report sections."""
+    L = ["", "## Action items", ""]
+    if not items:
+        return L + ["none today — run `scorer judge` to derive lessons from your prompts."]
+    for i, it in enumerate(items, 1):
+        src = "judge" if it.get("source") == "judge" else "metrics"
+        L.append(f"{i}. {clip(it.get('text'), 120)} — {it.get('category')}, {it.get('count', 0)}× ({src}) — "
+                 f"{_turns_ref(it.get('turn_ids') or [])}")
+        if it.get("example_quote"):
+            L.append(f"   - e.g. \"{clip(it['example_quote'], 80)}\"")
+        if it.get("claude_md_line"):
+            md = clip(it["claude_md_line"], 160).replace("`", "'")
+            L.append(f"   - CLAUDE.md/AGENTS.md: `{md}`")
+    if any(it.get("uncalibrated") for it in items):
+        L += ["", "_Judge items are uncalibrated (no κ check yet): treat them as prompts for reflection, "
+                  "not scores._"]
+    return L
