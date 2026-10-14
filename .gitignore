@@ -6,3 +6,5 @@ __pycache__/
 .context/
 *.db
 report_fallback.txt
+node_modules/
+agent-mastra/dist/
