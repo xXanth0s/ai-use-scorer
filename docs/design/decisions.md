@@ -36,3 +36,9 @@
 - **Brief 7b:** the analyst chat panel is added to the system (tokens and component specs in DESIGN.md; specimen in `preview.html`).
 - **Tooling use:** a "Leverage" diagnostic section (subagents plus skills/commands/MCP/plugins by initiator) is added to DESIGN.md. It is not scored.
 - Screenshots: `screenshots/dashboard-minimal-{light,dark}.png` (fixture DB from `tests/test_serve.py`) and `screenshots/design-preview-light.png`.
+
+## 2026-10-14: Sherpa theme supersedes the instrument-log system
+
+By user decision, the "instrument log" system above (Hanken Grotesk + JetBrains Mono, paper/ink palette, ochre/petrol agent inks) is superseded. The four mockups (A–D) were rejected as too elaborate. The dashboard now uses the Sherpa admin app's theme: its tokens (Pine, Cloud, warm-gray borders, Grass/Oak status), 48px header, underline tabs, and the compliance copilot's "Ask AI" sidebar. `DESIGN.md` now documents the Sherpa theme. The brand fonts are licensed and are not vendored, so the system stack stands in for them. The old font files stay in `static/fonts/` for `tests/test_serve.py`. Screenshots: `screenshots/sherpa-*.png`.
+
+**Follow-up (same day, user correction):** "Sherpa style" meant the colors only, plus the Sherpa/Lex copilot sidebar. The page layout is scorer's own: fluid up to 1400px, no left rail, sans tabular numerals (mono only for commands and paths), and a 4-number summary band, a full-width timeline and a 2-column detail grid on Today. The sankey "where turns ended" diagram was replaced by a per-session mini-timeline and a stacked verification bar. The Candidate tab was removed because the product is about the user's own use.
